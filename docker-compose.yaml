@@ -1,0 +1,50 @@
+name: epic-free
+
+services:
+  epic-free:
+    # Built and published by the `.github/workflows/docker.yml` workflow to GHCR.
+    # Replace <owner> with your GitHub username (lowercase) once the first build lands.
+    image: ghcr.io/${OWNER:-owner}/epic-free:latest
+    restart: always
+    container_name: epic-free
+
+    environment:
+      - TZ=Asia/Shanghai
+
+      # ----------------------------------------
+      # Epic account
+      # ----------------------------------------
+      - EPIC_EMAIL=your_email@example.com
+      - EPIC_PASSWORD=your_password
+
+      # ----------------------------------------
+      # LLM provider — pick ONE: gemini | glm | openai
+      # ----------------------------------------
+      - LLM_PROVIDER=openai
+      - OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
+      - OPENAI_BASE_URL=https://api.openai.com/v1
+      - OPENAI_MODEL=gpt-4.1-mini
+
+      # Switch to GLM (ZhipuAI) instead:
+      # - LLM_PROVIDER=glm
+      # - GLM_API_KEY=your_glm_api_key
+      # - GLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4
+      # - GLM_MODEL=glm-4.5v
+
+      # Switch to Gemini / AiHubMix instead:
+      # - LLM_PROVIDER=gemini
+      # - GEMINI_API_KEY=your_gemini_api_key
+      # - GEMINI_BASE_URL=
+      # - GEMINI_MODEL=gemini-2.5-pro
+
+      # ----------------------------------------
+      # Runtime
+      # ----------------------------------------
+      - BROWSER_BACKEND=auto
+      - ENABLE_APSCHEDULER=true
+
+    volumes:
+      - "./volumes/:/app/volumes/"
+
+    mem_limit: 4g
+    shm_size: 2gb

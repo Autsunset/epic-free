@@ -1,0 +1,26 @@
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Virtual envs
+.venv/
+venv/
+.uv/
+
+# Caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.git/
+
+# Local runtime data
+volumes/
+.env
+.env.local
+
+# Docs / editor (not needed in the image)
+.idea/
+.vscode/
+.DS_Store
