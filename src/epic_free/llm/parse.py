@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 import ast
-import base64
 import json
 import mimetypes
 import re
@@ -8,8 +7,6 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-import httpx
-from loguru import logger
 from pydantic import BaseModel
 
 KNOWN_CHALLENGE_TYPES = {
@@ -852,4 +849,3 @@ def _normalize_glm_payload(payload: dict[str, Any]) -> dict[str, Any]:
             return normalized
 
     return payload
-

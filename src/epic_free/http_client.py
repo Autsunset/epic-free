@@ -7,6 +7,7 @@ opened a *fresh* client (new TCP+TLS handshake) for every captcha-solve call;
 reusing one client with keep-alive connections is the main I/O performance win
 here.
 """
+
 from __future__ import annotations
 
 import httpx

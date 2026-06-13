@@ -10,6 +10,7 @@ Merges three LLM providers into one settings model:
 ``glm`` and ``openai`` share the same wire format and are served by a single
 client (:class:`epic_free.llm.openai_compat.OpenAICompatibleClient`).
 """
+
 import os
 from pathlib import Path
 
@@ -81,8 +82,11 @@ class EpicSettings(AgentConfig):
     BROWSER_BACKEND: str = Field(
         default="auto", description="Supported values: auto, camoufox, playwright"
     )
-    EPIC_EMAIL: str = Field(default_factory=lambda: _env("EPIC_EMAIL"))
-    EPIC_PASSWORD: SecretStr = Field(default_factory=lambda: _env("EPIC_PASSWORD"))
+    # Default to empty (not a None-returning factory) so a missing credential does
+    # not raise a cryptic pydantic error at import; deploy() reports it clearly via
+    # ``epic_configuration_error`` instead.
+    EPIC_EMAIL: str = Field(default="")
+    EPIC_PASSWORD: SecretStr = Field(default=SecretStr(""))
     DISABLE_BEZIER_TRAJECTORY: bool = Field(default=False)
     WAIT_FOR_CHALLENGE_VIEW_TO_RENDER_MS: int = Field(default=3000)
 
@@ -100,6 +104,17 @@ class EpicSettings(AgentConfig):
     # ------------------------------------------------------------------ scheduling / runtime
     ENABLE_APSCHEDULER: bool = Field(default=True)
     TASK_TIMEOUT_SECONDS: int = Field(default=900)
+
+    # ------------------------------------------------------------------ disk-artifact retention
+    # On each run, delete files older than N days under the volume dirs below.
+    # 0 = keep forever. Bounds unbounded growth on always-on deployments.
+    RECORD_RETENTION_DAYS: int = Field(
+        default=30, description="Prune browser video recordings (volumes/record) older than N days"
+    )
+    RUNTIME_RETENTION_DAYS: int = Field(
+        default=30,
+        description="Prune debug screenshots + hcaptcha caches older than N days",
+    )
 
     # ------------------------------------------------------------------ validators
     @model_validator(mode="before")
@@ -207,6 +222,17 @@ class EpicSettings(AgentConfig):
                 "Invalid LLM configuration: LLM_PROVIDER=gemini but GEMINI_API_KEY is empty. "
                 "Set GEMINI_API_KEY, or switch LLM_PROVIDER to openai/glm."
             )
+        return None
+
+    @property
+    def epic_configuration_error(self) -> str | None:
+        if not (self.EPIC_EMAIL or "").strip():
+            return (
+                "Invalid Epic configuration: EPIC_EMAIL is empty. "
+                "Set EPIC_EMAIL and EPIC_PASSWORD (the Epic account to claim with)."
+            )
+        if not self.EPIC_PASSWORD.get_secret_value().strip():
+            return "Invalid Epic configuration: EPIC_PASSWORD is empty. Set EPIC_PASSWORD."
         return None
 
 

@@ -7,6 +7,7 @@ hcaptcha-challenger calls ``genai.Client().aio.models.generate_content(...)`` an
 * let the native GenAI SDK run (``gemini``, optionally via a relay base URL), or
 * swap ``genai.Client`` for our OpenAI-compatible shim (``glm`` / ``openai``).
 """
+
 from __future__ import annotations
 
 from typing import Any

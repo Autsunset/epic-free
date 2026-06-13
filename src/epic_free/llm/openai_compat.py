@@ -64,6 +64,11 @@ def _strip_reasoning(text: str) -> str:
     return text.strip()
 
 
+# The in-process upload store lives as long as the client. Cap it so a long-lived
+# scheduler can't leak image bytes across captcha solves.
+_MAX_STORED_UPLOADS = 64
+
+
 class _UploadedFile:
     def __init__(self, uri: str, mime_type: str):
         self.name = uri
@@ -103,6 +108,9 @@ class _AsyncFiles:
         uri = f"{self._uri_scheme}://{id(content)}"
         mime_type = kwargs.get("mime_type") or _guess_mime_type(file)
         self._storage[uri] = {"content": content, "mime_type": mime_type}
+        # Bound memory: evict oldest entries beyond the cap (dicts keep insertion order).
+        while len(self._storage) > _MAX_STORED_UPLOADS:
+            del self._storage[next(iter(self._storage))]
         return _UploadedFile(uri=uri, mime_type=mime_type)
 
 

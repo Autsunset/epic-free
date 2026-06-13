@@ -4,6 +4,7 @@
 APScheduler is the single scheduler (the redundant/broken Celery setup from the
 original project was removed). The shared HTTP client is closed on shutdown.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -19,7 +20,15 @@ from loguru import logger
 from pytz import timezone
 
 from epic_free.browser import open_browser_context
-from epic_free.config import LOG_DIR, settings
+from epic_free.cleanup import prune_old_files
+from epic_free.config import (
+    HCAPTCHA_DIR,
+    LOG_DIR,
+    RECORD_DIR,
+    RUNTIME_DIR,
+    SCREENSHOTS_DIR,
+    settings,
+)
 from epic_free.epic.auth import EpicAuthorization
 from epic_free.epic.store import EpicAgent
 from epic_free.http_client import close_async_client
@@ -40,10 +49,19 @@ def _env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
+def _prune_old_artifacts() -> None:
+    """Trim aged recordings / debug captures so volumes/ doesn't grow without bound."""
+    with suppress(Exception):
+        prune_old_files(RECORD_DIR, settings.RECORD_RETENTION_DAYS)
+        for directory in (RUNTIME_DIR, SCREENSHOTS_DIR, HCAPTCHA_DIR):
+            prune_old_files(directory, settings.RUNTIME_RETENTION_DAYS)
+
+
 @logger.catch(reraise=True)
 async def execute_browser_tasks(headless: bool = True):
     """Authenticate with Epic and collect this week's free games."""
     logger.debug("Starting Epic Games collection task")
+    _prune_old_artifacts()
 
     async with open_browser_context(headless=headless) as browser:
         page = browser.pages[0] if browser.pages else await browser.new_page()
@@ -81,6 +99,10 @@ async def deploy():
             default=str,
         ),
     )
+
+    if epic_error := settings.epic_configuration_error:
+        logger.error(epic_error)
+        raise RuntimeError(epic_error)
 
     if configuration_error := settings.llm_configuration_error:
         logger.error(configuration_error)
@@ -130,9 +152,7 @@ async def deploy():
     shutdown_event = asyncio.Event()
 
     def signal_handler(signum, frame):
-        logger.debug(
-            f"Received signal {signal.Signals(signum).name}, initiating graceful shutdown"
-        )
+        logger.debug(f"Received signal {signal.Signals(signum).name}, initiating graceful shutdown")
         shutdown_event.set()
 
     signal.signal(signal.SIGINT, signal_handler)

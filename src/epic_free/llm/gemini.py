@@ -5,6 +5,7 @@ When ``LLM_PROVIDER=gemini`` we keep the real ``google.genai`` SDK but pin the
 API key and optionally override the base URL (e.g. for the AiHubMix relay), and
 bypass the File API by inlining uploaded images.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -12,6 +13,10 @@ from typing import Any
 from loguru import logger
 
 from epic_free.llm.parse import _ensure_list, _guess_mime_type, _load_binary
+
+# The in-process upload cache lives for the whole run (the scheduler stays up for
+# weeks), so cap it to avoid an unbounded memory leak across captcha solves.
+_GEMINI_FILE_CACHE_MAX = 64
 
 
 def apply_gemini_patch(settings: Any):
@@ -50,6 +55,9 @@ def apply_gemini_patch(settings: Any):
             content = _load_binary(file)
             file_id = f"bypass_{id(content)}"
             file_cache[file_id] = content
+            # Bound memory: evict oldest entries beyond the cap (dicts keep insertion order).
+            while len(file_cache) > _GEMINI_FILE_CACHE_MAX:
+                del file_cache[next(iter(file_cache))]
             return types.File(name=file_id, uri=file_id, mime_type=_guess_mime_type(file))
 
         orig_generate = genai.models.AsyncModels.generate_content

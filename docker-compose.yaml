@@ -53,6 +53,11 @@ services:
       # - RETRY_ON_FAILURE=true
       # - WAIT_FOR_CHALLENGE_VIEW_TO_RENDER_MS=1500
       #
+      # Disk-artifact retention (days; 0 = keep forever). Each run prunes
+      # volumes/ files older than this — handy for an always-on container.
+      # - RECORD_RETENTION_DAYS=30         # browser video recordings
+      # - RUNTIME_RETENTION_DAYS=30        # debug screenshots + hcaptcha caches
+      #
       # Per-task model overrides — leave empty to follow the provider's default
       # model set above (OPENAI_MODEL / GLM_MODEL / GEMINI_MODEL).
       # - CHALLENGE_CLASSIFIER_MODEL=

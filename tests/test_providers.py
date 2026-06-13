@@ -17,7 +17,12 @@ from hcaptcha_challenger.models import (
 )
 from pydantic import BaseModel, SecretStr
 
-from epic_free.llm.openai_compat import _AsyncModels, _strip_reasoning
+from epic_free.llm.openai_compat import (
+    _AsyncFiles,
+    _AsyncModels,
+    _MAX_STORED_UPLOADS,
+    _strip_reasoning,
+)
 from epic_free.llm.parse import (
     _coerce_payload_for_schema,
     _extract_json_payload,
@@ -254,3 +259,16 @@ def test_no_response_schema_means_no_schema_prompt_or_response_format():
     )
     assert "JSON schema" not in payload["messages"][0]["content"]
     assert "response_format" not in payload
+
+
+# ---------------------------------------------------------------------------
+# The in-process upload store must stay bounded (a long-lived scheduler reuses
+# the client across many captcha solves).
+# ---------------------------------------------------------------------------
+async def test_uploaded_files_storage_is_capped():
+    storage: dict = {}
+    files = _AsyncFiles(storage, "test-local")
+    for i in range(_MAX_STORED_UPLOADS + 10):
+        await files.upload(f"img-{i}".encode())
+
+    assert len(storage) == _MAX_STORED_UPLOADS

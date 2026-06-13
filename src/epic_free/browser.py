@@ -65,7 +65,7 @@ def _is_camoufox_bootstrap_error(err: Exception) -> bool:
 async def open_browser_context(headless: bool | str) -> AsyncIterator[BrowserContext]:
     backend = (settings.BROWSER_BACKEND or "auto").strip().lower()
     if backend not in {"auto", "camoufox", "playwright"}:
-        logger.warning("Unsupported BROWSER_BACKEND=%r, falling back to auto", backend)
+        logger.warning("Unsupported BROWSER_BACKEND={!r}, falling back to auto", backend)
         backend = "auto"
 
     if backend in {"auto", "camoufox"}:
