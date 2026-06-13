@@ -13,9 +13,12 @@ This merges the previously-separate OpenAI feature branch into the mainline:
 Performance note: requests go through the shared pooled HTTP client from
 :mod:`epic_free.http_client` instead of opening a new connection per call.
 """
+
 from __future__ import annotations
 
 import base64
+import json
+import re
 from contextlib import suppress
 from typing import Any
 
@@ -36,6 +39,29 @@ from epic_free.llm.parse import (
     _normalize_glm_payload,
     _normalize_glm_response_text,
 )
+
+# Reasoning models (kimi-k2, qwen-thinking, deepseek-r1, glm-4.5-thinking, …)
+# prepend a chain-of-thought wrapped in <think>…</think> (sometimes unclosed).
+# That reasoning breaks JSON extraction downstream — both our _extract_json_payload
+# and hcaptcha-challenger's own ``extract_first_json_block`` — so strip it from the
+# raw response text before anything parses it. (When a gateway returns the
+# chain-of-thought in a separate ``reasoning_content`` field, ``_extract_text``
+# already ignores it because it only reads ``message.content``.)
+_REASONING_TAG_RE = re.compile(
+    r"<\s*(?:think|thinking|reasoning|analysis)\b[^>]*>.*?<\s*/\s*(?:think|thinking|reasoning|analysis)\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+_REASONING_UNCLOSED_RE = re.compile(
+    r"<\s*(?:think|thinking|reasoning|analysis)\b[^>]*>.*",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _strip_reasoning(text: str) -> str:
+    """Remove ``<think>…</think>`` chain-of-thought blocks reasoning models emit."""
+    text = _REASONING_TAG_RE.sub("", text)
+    text = _REASONING_UNCLOSED_RE.sub("", text)
+    return text.strip()
 
 
 class _UploadedFile:
@@ -141,6 +167,26 @@ class _AsyncModels:
         if system_instruction:
             system_messages.append(str(system_instruction))
 
+        # The native Gemini SDK sends response_schema in the request body, so the
+        # model is forced to emit the exact field names. The OpenAI Chat
+        # Completions wire format has no such slot that every gateway honours, so
+        # we MUST spell the schema out in the prompt — otherwise the model invents
+        # its own field names (e.g. "checkout_modal_open" vs "checkout_open") and
+        # the downstream response_schema(**payload) validation fails. Verified
+        # necessary against kimi-k2.5.
+        response_schema = getattr(config, "response_schema", None)
+        if isinstance(response_schema, type) and issubclass(response_schema, BaseModel):
+            try:
+                schema_json = response_schema.model_json_schema()
+            except Exception:
+                schema_json = None
+            if schema_json:
+                system_messages.append(
+                    "Respond ONLY with a JSON object that EXACTLY matches this JSON "
+                    "schema — use ONLY these field names, include every required field, "
+                    "and add nothing else:\n" + json.dumps(schema_json, ensure_ascii=False)
+                )
+
         for content in _ensure_list(contents):
             role = getattr(content, "role", None) or "user"
             items = []
@@ -200,7 +246,7 @@ class _AsyncModels:
         content = message.get("content")
 
         if isinstance(content, str):
-            return content.strip()
+            return _strip_reasoning(content)
 
         if isinstance(content, list):
             parts = [
@@ -208,7 +254,7 @@ class _AsyncModels:
                 for item in content
                 if isinstance(item, dict) and item.get("type") == "text"
             ]
-            return "\n".join(parts).strip()
+            return _strip_reasoning("\n".join(parts))
 
         raise ValueError(f"{self._provider_name} response content is empty")
 

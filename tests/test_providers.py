@@ -6,6 +6,7 @@ These cover the response-normalization helpers shared by the ``glm`` and
 (OpenAI / OpenAI-compatible gateways need a ``data:`` URL; GLM accepts raw
 base64).
 """
+
 import json
 
 import pytest
@@ -14,9 +15,9 @@ from hcaptcha_challenger.models import (
     ImageAreaSelectChallenge,
     ImageDragDropChallenge,
 )
-from pydantic import SecretStr
+from pydantic import BaseModel, SecretStr
 
-from epic_free.llm.openai_compat import _AsyncModels
+from epic_free.llm.openai_compat import _AsyncModels, _strip_reasoning
 from epic_free.llm.parse import (
     _coerce_payload_for_schema,
     _extract_json_payload,
@@ -167,3 +168,89 @@ def test_chat_completions_payload_shape(provider_name, data_url):
     # system message comes first, then the user message
     assert payload["messages"][0]["role"] == "system"
     assert payload["messages"][1]["role"] == "user"
+
+
+# ---------------------------------------------------------------------------
+# Reasoning models (kimi-k2.5, deepseek-r1, glm-4.5-thinking, …) wrap a
+# chain-of-thought in <think>…</think>; it must be stripped before JSON parsing.
+# ---------------------------------------------------------------------------
+def test_strip_reasoning_removes_closed_think_block():
+    text = '<think>The grid shows two cats, top-left and center.</think>{"answer": [[1, 2, 3, 4]]}'
+    assert _strip_reasoning(text) == '{"answer": [[1, 2, 3, 4]]}'
+
+
+def test_strip_reasoning_leaves_plain_json_untouched():
+    text = '{"answer": "image_label_single_select"}'
+    assert _strip_reasoning(text) == text
+
+
+def test_strip_reasoning_handles_alternate_tag_names_and_spacing():
+    assert _strip_reasoning("<thinking>z</thinking>{}") == "{}"
+    assert _strip_reasoning("<reasoning>x</reasoning>{}") == "{}"
+    assert _strip_reasoning("<analysis>y</analysis>{}") == "{}"
+    # tolerant of whitespace / attributes in the tag and a trailing newline
+    assert _strip_reasoning("< think >\nlong cot\n</ think >\n{}\n") == "{}"
+
+
+def test_strip_reasoning_drops_unclosed_think_tail():
+    # A truncated / never-closed reasoning block: everything from the open tag on
+    # is chain-of-thought and must go, leaving only what preceded it.
+    text = '{"answer": "yes"}\n<think>wait, on reflection I should reconsider'
+    assert _strip_reasoning(text) == '{"answer": "yes"}'
+
+
+# ---------------------------------------------------------------------------
+# response_schema must be spelled out in the prompt (the OpenAI wire format has
+# no schema slot every gateway honours), or the model invents its own field
+# names and downstream validation fails.
+# ---------------------------------------------------------------------------
+class _Desc(BaseModel):
+    checkout_open: bool
+    captcha_visible: bool
+    summary: str
+
+
+def _text_content(prompt: str):
+    class _Part:
+        text = prompt
+
+    class _Content:
+        role = "user"
+        parts = [_Part()]
+
+    return _Content()
+
+
+def test_response_schema_field_names_are_injected_into_prompt():
+    models = _models("OpenAI", data_url_images=True)
+
+    class _Config:
+        system_instruction = "You solve hCaptcha."
+        response_schema = _Desc
+
+    payload = models._build_payload(
+        model="kimi-k2.5",
+        contents=[_text_content("describe the page")],
+        config=_Config(),
+        kwargs={},
+    )
+    system_message = payload["messages"][0]
+    assert system_message["role"] == "system"
+    # the exact schema field names must reach the model
+    for field in ("checkout_open", "captcha_visible", "summary"):
+        assert field in system_message["content"]
+    # and a JSON object is requested back
+    assert payload["response_format"] == {"type": "json_object"}
+
+
+def test_no_response_schema_means_no_schema_prompt_or_response_format():
+    models = _models("OpenAI", data_url_images=True)
+
+    class _Config:
+        system_instruction = "You solve hCaptcha."
+
+    payload = models._build_payload(
+        model="gpt-4.1-mini", contents=[_text_content("find the cat")], config=_Config(), kwargs={}
+    )
+    assert "JSON schema" not in payload["messages"][0]["content"]
+    assert "response_format" not in payload
