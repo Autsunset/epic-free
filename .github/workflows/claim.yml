@@ -1,0 +1,132 @@
+name: Claim Epic Free Games (Scheduled)
+
+# 无需服务器即可领取 Epic 周免：Fork 本仓库 → 配置 Secrets → 启用本工作流。
+# 参照上游 epic-freebies-helper 的 epic-gamer.yml 适配而来。
+
+on:
+  workflow_dispatch: # 手动触发
+  schedule:
+    # 每周四 UTC 15:20（北京时间周四 23:20）运行一次。
+    # 该时间点放在 Epic 周免刷新之后，避免过早触发。
+    - cron: '20 15 * * 4'
+
+env:
+  # 迁移期保险：强制 JS Actions 跑在 Node 24 上。
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  claim:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # 上游主仓库本身不跑定时领取（没有配置 Secrets）；Fork 后的仓库会正常运行。
+    if: github.repository != 'Autsunset/epic-free'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libxml2-dev libxslt-dev
+
+      - name: Install dependencies
+        run: uv sync
+
+      # GITHUB_TOKEN 降低 Camoufox 下载触发 GitHub 403 限流的概率；
+      # 即使这一步失败，运行时也会回退到 Playwright Firefox。
+      - name: Install Camoufox
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: uv run camoufox fetch
+
+      - name: Install Playwright Firefox fallback
+        run: uv run playwright install firefox
+
+      - name: Run epic-free (single shot)
+        env:
+          # ---- Epic 账号（务必关闭 2FA）----
+          EPIC_EMAIL: ${{ secrets.EPIC_EMAIL }}
+          EPIC_PASSWORD: ${{ secrets.EPIC_PASSWORD }}
+
+          # ---- 选择一个 provider：gemini | glm | openai ----
+          LLM_PROVIDER: ${{ secrets.LLM_PROVIDER }}
+
+          # OpenAI / 任意 OpenAI 兼容网关（epic-free 相比上游新增）
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+
+          # GLM（智谱 / BigModel）
+          GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
+          GLM_BASE_URL: ${{ secrets.GLM_BASE_URL }}
+          GLM_MODEL: ${{ secrets.GLM_MODEL }}
+
+          # Gemini 官方 / AiHubMix 中转
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_BASE_URL: ${{ secrets.GEMINI_BASE_URL }}
+          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
+
+          # 可选：分任务模型覆盖。留空自动跟随上面所选 provider 的默认模型。
+          CHALLENGE_CLASSIFIER_MODEL: ${{ secrets.CHALLENGE_CLASSIFIER_MODEL }}
+          IMAGE_CLASSIFIER_MODEL: ${{ secrets.IMAGE_CLASSIFIER_MODEL }}
+          SPATIAL_POINT_REASONER_MODEL: ${{ secrets.SPATIAL_POINT_REASONER_MODEL }}
+          SPATIAL_PATH_REASONER_MODEL: ${{ secrets.SPATIAL_PATH_REASONER_MODEL }}
+
+          # ---- 运行参数 ----
+          BROWSER_BACKEND: auto
+          DISABLE_BEZIER_TRAJECTORY: false
+          # 关键：Actions 由 GitHub cron 触发，关闭内置常驻调度器，跑完即退出。
+          ENABLE_APSCHEDULER: false
+          MPLBACKEND: Agg
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "🚀 启动单次领取任务（gemini / glm / openai 均支持）..."
+          xvfb-run --auto-servernum --server-num=1 --server-args='-screen 0, 1920x1080x24' uv run epic-free
+
+      - name: Write run summary
+        if: always()
+        run: |
+          {
+            echo "## epic-free run finished"
+            echo
+            echo "- 若游戏此前已在库中，Epic 不一定再发确认邮件；以日志与 artifact 为准。"
+            echo "- 需要排查时，下载本次运行底部的 \`epic-logs\` / \`epic-runtime\` / \`epic-screenshots\` artifact。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload runtime artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: epic-runtime-${{ github.run_id }}
+          path: volumes/runtime/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Upload log artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: epic-logs-${{ github.run_id }}
+          path: volumes/logs/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Upload screenshot artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: epic-screenshots-${{ github.run_id }}
+          path: volumes/screenshots/
+          retention-days: 7
+          if-no-files-found: ignore

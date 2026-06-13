@@ -43,6 +43,62 @@ uv run epic-free
 
 `LLM_PROVIDER` 留空时会根据已填写的 key 自动判断。四个验证码子模型（`CHALLENGE_CLASSIFIER_MODEL` 等）留空时自动跟随所选 provider 的默认模型。
 
+## GitHub Actions（无需服务器）
+
+没有服务器 / NAS，或租用的机器跑不动 Docker，可以让 GitHub 替你跑：默认每周四在 GitHub 的免费 runner 上定时领取一次。工作流见 [`.github/workflows/claim.yml`](.github/workflows/claim.yml)（参照上游 `epic-freebies-helper` 适配，并补上了 `openai` provider）。
+
+> [!NOTE]
+> GitHub runner 用的是机房公网 IP，Epic / hCaptcha 风控更严：验证码成功率比家用住宅 IP 低，单次运行可能 10–20 分钟并伴随多次重试——这是该模式的固有代价，不代表脚本失效。有常驻服务器的话仍建议用下面的 Docker 部署。
+
+### 1. Fork 并启用工作流
+
+- 把本仓库 Fork 到你自己的账号。
+- 打开你 Fork 仓库的 `Actions` 页面，找到 **`Claim Epic Free Games (Scheduled)`**，点一次 `Enable workflow`（否则 GitHub 不会让 Fork 的定时任务自动生效）。
+
+> 主仓库 `Autsunset/epic-free` 本身不会跑定时领取（工作流里有 `if` 守卫、也没配 Secrets），只有 Fork 才会运行。
+
+### 2. 配置 Secrets
+
+进入你 Fork 仓库的 `Settings` → `Secrets and variables` → `Actions`，添加：
+
+**必填（账号，务必关闭 2FA）**
+
+| Secret | 示例 |
+|---|---|
+| `EPIC_EMAIL` | your_epic@example.com |
+| `EPIC_PASSWORD` | your_password |
+
+**provider 三选一**（`LLM_PROVIDER` 填 `openai` / `glm` / `gemini`，并填对应那一组 key；其余 provider 的 Secret 不建即可，空值会被自动忽略）：
+
+| `LLM_PROVIDER` | 需要的 Secret |
+|---|---|
+| `openai` | `OPENAI_API_KEY`（可选 `OPENAI_BASE_URL` / `OPENAI_MODEL`） |
+| `glm` | `GLM_API_KEY`（可选 `GLM_BASE_URL` / `GLM_MODEL`） |
+| `gemini` | `GEMINI_API_KEY`（可选 `GEMINI_BASE_URL` / `GEMINI_MODEL`） |
+
+### 3. 手动跑一次 / 等定时
+
+- `Actions` → `Claim Epic Free Games (Scheduled)` → `Run workflow` 立刻手动触发；
+- 或等每周四北京时间 23:20 自动运行（`cron: '20 15 * * 4'`，可在 `claim.yml` 里改）。
+
+> [!IMPORTANT]
+> 受 Epic 风控影响单次运行可能 10–20 分钟并多次重试，**运行结束前不要手动取消**。
+
+### 4. 看结果
+
+日志在该次 run 页面实时可见；底部 `Artifacts` 会打包上传（保留 7 天，没产生文件的包不会出现）：
+
+| Artifact | 内容 |
+|---|---|
+| `epic-logs-<run_id>` | 运行 / 错误日志 |
+| `epic-runtime-<run_id>` | `promotions` 缓存、`purchase_debug` 截图与调试文本 |
+| `epic-screenshots-<run_id>` | 登录 / 风控 / 授权阶段的截图 |
+
+看到 `Login success`、`All week-free games are already in the library` 或 `🎉 ...` 即正常。常见前提：账号需**关闭 2FA**（卡在 `/id/login/mfa` 即 2FA 未关）；若卡在 `privacy-policy` 页，先在自己浏览器手动登录确认一次再重跑。
+
+> [!TIP]
+> 与 Docker 模式不同，Actions 的 runner 每次跑完即销毁，**不保留登录会话**（每次都重新登录）。这也是机房 IP 下登录验证码偶发失败更明显的原因。
+
 ## Docker 部署（推荐）
 
 镜像由 `.github/workflows/docker.yml` 自动构建并发布到 GHCR：`ghcr.io/autsunset/epic-free:latest`。下面的步骤从克隆仓库开始，完整走一遍部署流程。
