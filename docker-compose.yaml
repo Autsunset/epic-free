@@ -42,6 +42,30 @@ services:
       - BROWSER_BACKEND=auto
       - ENABLE_APSCHEDULER=true
 
+      # ----------------------------------------
+      # Advanced tuning (optional)
+      # All of the following are real fields inherited from hcaptcha-challenger's
+      # AgentConfig — uncomment and adjust as needed.
+      # ----------------------------------------
+      # - DISABLE_BEZIER_TRAJECTORY=false
+      # - EXECUTION_TIMEOUT=120            # seconds, per-step hard limit
+      # - RESPONSE_TIMEOUT=30              # seconds, LLM HTTP response wait
+      # - RETRY_ON_FAILURE=true
+      # - WAIT_FOR_CHALLENGE_VIEW_TO_RENDER_MS=1500
+      #
+      # Per-task model overrides — leave empty to follow the provider's default
+      # model set above (OPENAI_MODEL / GLM_MODEL / GEMINI_MODEL).
+      # - CHALLENGE_CLASSIFIER_MODEL=
+      # - IMAGE_CLASSIFIER_MODEL=
+      # - SPATIAL_POINT_REASONER_MODEL=
+      # - SPATIAL_PATH_REASONER_MODEL=
+      #
+      # NOTE: the upstream docker-compose also lists CONSTRAINT_RESPONSE_SCHEMA and
+      # *_THINKING_BUDGET (IMAGE_CLASSIFIER_THINKING_BUDGET, SPatial_*). These are
+      # NOT fields in the current hcaptcha-challenger AgentConfig, so they are
+      # silently ignored (settings use extra="ignore") — they have no effect here
+      # nor in the original project.
+
     volumes:
       - "./volumes/:/app/volumes/"
 
