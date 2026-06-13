@@ -165,6 +165,27 @@ docker run -d --name epic-free \
 - 移除 Celery（其 task 模块路径在原项目中已失效），统一用 APScheduler。
 - `src/epic_free/` 包结构，消除 `sys.path` hack。
 
+## 致谢
+
+本项目站在前人的肩膀上，向上游作者致以诚挚谢意：
+
+- **[QIN2DIM/epic-awesome-gamer](https://github.com/QIN2DIM/epic-awesome-gamer)** —— 本项目所归属的整个技术谱系的起点。Epic 免费游戏自动化领取的整体流程、hCaptcha 的 AI 解题思路，以及本项目依赖的 [`hcaptcha-challenger`](https://github.com/QIN2DIM/hcaptcha-challenger) 库，均源自 QIN2DIM 的工作。`epic_free/epic/auth.py` 与 `epic_free/epic/store.py` 中的浏览器自动化逻辑可追溯到该项目。
+- **[Ronchy2000/epic-freebies-helper](https://github.com/Ronchy2000/epic-freebies-helper)** —— 本重构项目的直接前身。多 LLM provider（Gemini / GLM）支持、领取流程的工程化加固（设备弹窗处理、结账确认、GLM 响应归一化等），以及 Docker / GitHub Actions 的部署方案，均建立在它的基础之上。`epic-free` 即为它的重构与整合。
+
+如无特别说明，本项目代码遵循其来源项目的许可证（GPL-3.0-or-later）。
+
 ## 许可证
 
-GPL-3.0-or-later
+本项目基于 [GPL-3.0-or-later](./LICENSE) 协议开源。因为本项目是上述 GPL-3.0 项目的衍生作品，按协议要求同样以 GPL-3.0-or-later 发布。
+
+```
+epic-free — refactor of epic-freebies-helper
+Copyright (C) 2026 Autsunset
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+```
+
+完整协议文本见仓库根目录的 [LICENSE](./LICENSE) 文件。
