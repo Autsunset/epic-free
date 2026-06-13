@@ -101,7 +101,7 @@ cd epic-free
 docker compose up -d
 ```
 
-首次启动会从 GHCR 拉取镜像（约 2–3 GB，含 Playwright + Camoufox 运行时），随后容器以后台守护方式运行：立刻跑一次领取，并按计划定时重跑。
+首次启动会从 GHCR 拉取镜像（压缩后约 1 GB，含 Playwright + Camoufox 运行时；解压后磁盘占用更大），随后容器以后台守护方式运行：立刻跑一次领取，并按计划定时重跑。
 
 ### 4. 查看运行状态与日志
 
