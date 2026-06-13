@@ -2,9 +2,8 @@ name: epic-free
 
 services:
   epic-free:
-    # Built and published by the `.github/workflows/docker.yml` workflow to GHCR.
-    # Replace <owner> with your GitHub username (lowercase) once the first build lands.
-    image: ghcr.io/${OWNER:-owner}/epic-free:latest
+    # Published by .github/workflows/docker.yml. Forks: change this to your own GHCR path.
+    image: ghcr.io/autsunset/epic-free:latest
     restart: always
     container_name: epic-free
 
