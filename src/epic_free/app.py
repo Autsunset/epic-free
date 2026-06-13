@@ -86,7 +86,16 @@ async def deploy():
         logger.error(configuration_error)
         raise RuntimeError(configuration_error)
 
-    await execute_browser_tasks(headless=headless)
+    # Run once immediately. A partial failure (e.g. one game whose captcha could
+    # not be solved) must NOT prevent the scheduler from starting — the scheduler
+    # will retry on its next cron tick. @logger.catch already logged the traceback.
+    try:
+        await execute_browser_tasks(headless=headless)
+    except Exception as err:
+        logger.error(
+            "Immediate collection run failed; the scheduler will retry later | err={!r}",
+            err,
+        )
 
     if not settings.ENABLE_APSCHEDULER:
         logger.debug("Scheduler is disabled, deployment completed")
