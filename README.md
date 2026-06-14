@@ -45,7 +45,7 @@ uv run epic-free
 
 ## GitHub Actions（无需服务器）
 
-没有服务器 / NAS，或租用的机器跑不动 Docker，可以让 GitHub 替你跑：默认每周四在 GitHub 的免费 runner 上定时领取一次。工作流见 [`.github/workflows/claim.yml`](.github/workflows/claim.yml)（参照上游 `epic-freebies-helper` 适配，并补上了 `openai` provider）。
+没有服务器 / NAS，或租用的机器跑不动 Docker，可以让 GitHub 替你跑：每周四晚到周五凌晨在 GitHub 的免费 runner 上定时领取 3 次（北京时间 周四 23:20 / 周五 00:20 / 01:20），每次独立 runner、命中率叠加。工作流见 [`.github/workflows/claim.yml`](.github/workflows/claim.yml)（参照上游 `epic-freebies-helper` 适配，并补上了 `openai` provider）。
 
 > [!NOTE]
 > GitHub runner 用的是机房公网 IP，Epic / hCaptcha 风控更严：验证码成功率比家用住宅 IP 低，单次运行可能 10–20 分钟并伴随多次重试——这是该模式的固有代价，不代表脚本失效。有常驻服务器的话仍建议用下面的 Docker 部署。
@@ -79,7 +79,7 @@ uv run epic-free
 ### 3. 手动跑一次 / 等定时
 
 - `Actions` → `Claim Epic Free Games (Scheduled)` → `Run workflow` 立刻手动触发；
-- 或等每周四北京时间 23:20 自动运行（`cron: '20 15 * * 4'`，可在 `claim.yml` 里改）。
+- 或等每周自动运行：北京时间 周四 23:20 / 周五 00:20 / 01:20 共 3 次（`cron` 在 `claim.yml` 里，可改）。
 
 > [!IMPORTANT]
 > 受 Epic 风控影响单次运行可能 10–20 分钟并多次重试，**运行结束前不要手动取消**。

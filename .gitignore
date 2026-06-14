@@ -28,3 +28,6 @@ volumes/
 # Env
 .env
 .env.local
+
+# Local diagnostic dumps (e.g. downloaded Actions artifacts for troubleshooting)
+log/
