@@ -41,7 +41,6 @@ CHECKOUT_BUTTON_TEXTS = ("PLACE ORDER", "ADD TO LIBRARY")
 PurchaseContainer = FrameLocator | Frame | Page
 
 
-
 class EpicAgent:
     def __init__(self, page: Page):
         self.page = page
@@ -293,8 +292,7 @@ class EpicGames:
 
             with suppress(Exception):
                 frame_element = await frame.frame_element()
-                frame_box = await frame_element.evaluate(
-                    """
+                frame_box = await frame_element.evaluate("""
                     (element) => {
                       const rect = element.getBoundingClientRect();
                       const style = window.getComputedStyle(element);
@@ -309,8 +307,7 @@ class EpicGames:
                           style.opacity !== '0'
                       };
                     }
-                    """
-                )
+                    """)
                 if (
                     isinstance(frame_box, dict)
                     and frame_box.get("visible")
@@ -352,8 +349,7 @@ class EpicGames:
                             return True
 
         with suppress(Exception):
-            clicked = await page.evaluate(
-                """
+            clicked = await page.evaluate("""
                 () => {
                   const isVisible = (element) => {
                     const rect = element.getBoundingClientRect();
@@ -375,14 +371,12 @@ class EpicGames:
                   button.click();
                   return true;
                 }
-                """
-            )
+                """)
             if clicked:
                 return True
 
         with suppress(Exception):
-            clicked = await page.evaluate(
-                """
+            clicked = await page.evaluate("""
                 () => {
                   const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim().toUpperCase();
                   const isVisible = (element) => {
@@ -450,8 +444,7 @@ class EpicGames:
                   button.click();
                   return true;
                 }
-                """
-            )
+                """)
             if clicked:
                 return True
 
@@ -1033,7 +1026,12 @@ class EpicGames:
         )
 
     async def _resolve_checkout_security_check(
-        self, page: Page, agent: AgentV, url: str, max_wait_ms: int = 600000
+        self,
+        page: Page,
+        agent: AgentV,
+        url: str,
+        max_wait_ms: int = 600000,
+        max_consecutive_failures: int = 3,
     ) -> bool:
         if not await self._is_checkout_security_check_visible(page):
             return True
@@ -1042,6 +1040,15 @@ class EpicGames:
 
         started_at = time.monotonic()
         attempt = 0
+        # ``last_solve_clean`` records whether the most recent ``agent.wait_for_challenge()``
+        # returned without raising. A vanished security-check dialog is only treated as
+        # solved when the prior solve was clean — otherwise a captcha *timeout* that closed
+        # the dialog would be misreported as success and leave Place Order spinning on a
+        # game that was never claimed. ``consecutive_failures`` bails out of the loop early
+        # when the solver keeps failing (e.g. hCaptcha never returns a payload on a
+        # datacenter IP), so this game is abandoned quickly instead of burning max_wait_ms.
+        last_solve_clean = False
+        consecutive_failures = 0
 
         while (time.monotonic() - started_at) * 1000 < max_wait_ms:
             attempt += 1
@@ -1050,7 +1057,7 @@ class EpicGames:
                 logger.success(f"Checkout security check resolved into claimed state - {url=}")
                 return True
 
-            if not await self._is_checkout_security_check_visible(page):
+            if last_solve_clean and not await self._is_checkout_security_check_visible(page):
                 logger.success(
                     f"Checkout security check cleared before solve attempt {attempt} - {url=}"
                 )
@@ -1070,7 +1077,11 @@ class EpicGames:
 
             try:
                 await agent.wait_for_challenge()
+                last_solve_clean = True
+                consecutive_failures = 0
             except Exception as err:
+                last_solve_clean = False
+                consecutive_failures += 1
                 logger.warning(
                     f"Checkout security check solve attempt failed (attempt {attempt}): {err}"
                 )
@@ -1078,6 +1089,15 @@ class EpicGames:
                     await self._capture_purchase_debug(
                         page, f"checkout_security_check_failed_{attempt}", url
                     )
+                if consecutive_failures >= max_consecutive_failures:
+                    logger.warning(
+                        f"Checkout security check gave up after {consecutive_failures} "
+                        f"consecutive solve failures - {url=}"
+                    )
+                    await self._capture_purchase_debug(
+                        page, "checkout_security_check_unresolved", url
+                    )
+                    return False
 
             await page.wait_for_timeout(1500)
 
@@ -1087,7 +1107,7 @@ class EpicGames:
                 )
                 return True
 
-            if not await self._is_checkout_security_check_visible(page):
+            if last_solve_clean and not await self._is_checkout_security_check_visible(page):
                 logger.success(f"Checkout security check solved successfully - {url=}")
                 return True
 
@@ -1098,7 +1118,7 @@ class EpicGames:
             if outcome == "claimed":
                 logger.success(f"Checkout security check resolved into claimed state - {url=}")
                 return True
-            if outcome == "checkout":
+            if outcome == "checkout" and last_solve_clean:
                 logger.success(f"Checkout security check cleared back to checkout - {url=}")
                 return True
 
@@ -1420,7 +1440,21 @@ class EpicGames:
 
         except Exception as err:
             logger.warning(f"Instant checkout warning: {err}")
+            return await self._recover_after_checkout_error(page, promotion, url)
+
+    async def _recover_after_checkout_error(
+        self, page: Page, promotion: PromotionGame, url: str
+    ) -> bool:
+        """Best-effort recovery after an exception during instant checkout.
+
+        Every step here touches the page and may itself fail if the browser/driver
+        is already dead (e.g. "Connection closed while reading from the driver").
+        Such secondary failures are contained so a single game's crash does not
+        propagate and abort the whole collection run — the game is simply skipped.
+        """
+        with suppress(Exception):
             await self._capture_purchase_debug(page, "instant_checkout_warning", url)
+        try:
             with suppress(Exception):
                 logger.debug(f"Instant checkout fallback | current_url={page.url}")
             await self._handle_device_not_supported_modal(page, url, timeout_ms=5000)
@@ -1429,6 +1463,12 @@ class EpicGames:
                 return True
 
             return await self._finalize_unconfirmed_checkout(page, promotion)
+        except Exception as recovery_err:
+            logger.warning(
+                f"Instant checkout recovery abandoned after a browser error: "
+                f"{recovery_err} - {url=}"
+            )
+            return False
 
     async def add_promotion_to_cart(
         self, page: Page, promotions: List[PromotionGame]
