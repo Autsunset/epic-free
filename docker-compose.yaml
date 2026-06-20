@@ -42,6 +42,10 @@ services:
       - BROWSER_BACKEND=auto
       - ENABLE_APSCHEDULER=true
 
+      # Hard cap (seconds) for a single collection run. A hung browser is
+      # aborted so the scheduler retries on its next tick. Default 900; 0 = off.
+      # - TASK_TIMEOUT_SECONDS=900
+
       # ----------------------------------------
       # Disk-artifact retention — ON BY DEFAULT (30 days)
       # Each run deletes volumes/ files older than N days so the directory does

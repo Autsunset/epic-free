@@ -18,9 +18,9 @@ from hcaptcha_challenger.models import (
 from pydantic import BaseModel, SecretStr
 
 from epic_free.llm.openai_compat import (
+    _MAX_STORED_UPLOADS,
     _AsyncFiles,
     _AsyncModels,
-    _MAX_STORED_UPLOADS,
     _strip_reasoning,
 )
 from epic_free.llm.parse import (

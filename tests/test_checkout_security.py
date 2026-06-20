@@ -14,16 +14,8 @@ Covers two production failure modes:
   crash propagated and aborted the whole collection run. Recovery is now contained.
 """
 
-# hcaptcha-challenger's AgentConfig marks GEMINI_API_KEY required; config.py
-# instantiates settings at import time. Seed placeholder creds so importing the
-# store module works in a network-less test environment (production seeds
-# GEMINI_API_KEY from the openai/glm key via _bridge_provider_credentials).
-import os
-
-os.environ.setdefault("LLM_PROVIDER", "openai")
-os.environ.setdefault("OPENAI_API_KEY", "fake-test-key")
-os.environ.setdefault("GEMINI_API_KEY", "fake-test-key")
-
+# Placeholder credentials needed to import the store module are seeded in
+# tests/conftest.py (before any test module is imported).
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 

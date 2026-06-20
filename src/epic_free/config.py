@@ -52,6 +52,32 @@ def _coerce_secret(value: object) -> str | None:
     return value or None
 
 
+def _resolve_provider(provider: object, openai_key: object, glm_key: object) -> str:
+    """Return the LLM provider, auto-detecting from the first present key.
+
+    Detection order is ``openai → glm → gemini``. Shared by both the before- and
+    after-validators so the fallback logic lives in exactly one place.
+    """
+    provider = str(provider or "").strip().lower()
+    if provider in SUPPORTED_PROVIDERS:
+        return provider
+    return "openai" if openai_key else ("glm" if glm_key else "gemini")
+
+
+def _seed_gemini_key(gemini_key, openai_key, glm_key):
+    """Return the value to use for ``GEMINI_API_KEY``.
+
+    ``hcaptcha-challenger`` reads ``GEMINI_API_KEY`` off its base model, so a
+    non-Gemini deploy still needs it populated. Keeps the existing key when set,
+    otherwise falls back to the openai/glm credential (in that order).
+    """
+    if gemini_key is not None:
+        return gemini_key
+    if openai_key is not None:
+        return openai_key
+    return glm_key
+
+
 class EpicSettings(AgentConfig):
     model_config = SettingsConfigDict(env_file=".env", env_ignore_empty=True, extra="ignore")
 
@@ -103,7 +129,13 @@ class EpicSettings(AgentConfig):
 
     # ------------------------------------------------------------------ scheduling / runtime
     ENABLE_APSCHEDULER: bool = Field(default=True)
-    TASK_TIMEOUT_SECONDS: int = Field(default=900)
+    TASK_TIMEOUT_SECONDS: int = Field(
+        default=900,
+        description=(
+            "Hard cap (seconds) for a single collection run; a hung browser is "
+            "aborted so the scheduler can retry on its next tick. 0 disables the cap."
+        ),
+    )
 
     # ------------------------------------------------------------------ disk-artifact retention
     # On each run, delete files older than N days under the volume dirs below.
@@ -122,22 +154,18 @@ class EpicSettings(AgentConfig):
     def _bridge_provider_credentials(cls, raw_data):
         data = dict(raw_data) if isinstance(raw_data, dict) else {}
 
-        provider = str(data.get("LLM_PROVIDER") or "").strip().lower()
         glm_key = _coerce_secret(data.get("GLM_API_KEY"))
         openai_key = _coerce_secret(data.get("OPENAI_API_KEY"))
         gemini_key = _coerce_secret(data.get("GEMINI_API_KEY"))
 
-        if provider not in SUPPORTED_PROVIDERS:
-            # auto-detect from the first available credential
-            data["LLM_PROVIDER"] = "openai" if openai_key else ("glm" if glm_key else "gemini")
+        data["LLM_PROVIDER"] = _resolve_provider(data.get("LLM_PROVIDER"), openai_key, glm_key)
 
         # hcaptcha-challenger still reads GEMINI_API_KEY from its base model, so
         # seed it before field validation for non-Gemini environments.
         if gemini_key is None:
-            if openai_key is not None:
-                data["GEMINI_API_KEY"] = openai_key
-            elif glm_key is not None:
-                data["GEMINI_API_KEY"] = glm_key
+            seeded = _seed_gemini_key(gemini_key, openai_key, glm_key)
+            if seeded is not None:
+                data["GEMINI_API_KEY"] = seeded
 
         return data
 
@@ -162,18 +190,12 @@ class EpicSettings(AgentConfig):
             if isinstance(value, str):
                 setattr(self, field_name, value.strip())
 
-        provider = (self.LLM_PROVIDER or "").strip().lower()
-        if provider not in SUPPORTED_PROVIDERS:
-            provider = (
-                "openai" if self.OPENAI_API_KEY else ("glm" if self.GLM_API_KEY else "gemini")
-            )
+        provider = _resolve_provider(self.LLM_PROVIDER, self.OPENAI_API_KEY, self.GLM_API_KEY)
         self.LLM_PROVIDER = provider
 
-        if self.GEMINI_API_KEY is None:
-            if self.OPENAI_API_KEY is not None:
-                self.GEMINI_API_KEY = self.OPENAI_API_KEY
-            elif self.GLM_API_KEY is not None:
-                self.GEMINI_API_KEY = self.GLM_API_KEY
+        self.GEMINI_API_KEY = _seed_gemini_key(
+            self.GEMINI_API_KEY, self.OPENAI_API_KEY, self.GLM_API_KEY
+        )
 
         provider_default = {
             "openai": self.OPENAI_MODEL,

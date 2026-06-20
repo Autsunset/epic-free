@@ -86,6 +86,27 @@ async def execute_browser_tasks(headless: bool = True):
         logger.debug("Browser tasks execution finished successfully")
 
 
+async def _run_task_with_timeout(headless: bool = True) -> None:
+    """Run a single collection under ``TASK_TIMEOUT_SECONDS`` (0 disables the cap).
+
+    A hung browser run (frozen page, stuck network) would otherwise block the
+    scheduler forever. We bound it here so the cron simply retries on its next
+    tick; the timeout is logged like any other failed run rather than raised.
+    """
+    timeout = settings.TASK_TIMEOUT_SECONDS
+    if not timeout or timeout <= 0:
+        await execute_browser_tasks(headless=headless)
+        return
+    try:
+        await asyncio.wait_for(execute_browser_tasks(headless=headless), timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.error(
+            "Collection run exceeded TASK_TIMEOUT_SECONDS={}s and was aborted; "
+            "the scheduler will retry later",
+            timeout,
+        )
+
+
 async def deploy():
     """Run once immediately, then keep an APScheduler running until signaled."""
     headless = _env_bool("HEADLESS", True)
@@ -112,7 +133,7 @@ async def deploy():
     # not be solved) must NOT prevent the scheduler from starting — the scheduler
     # will retry on its next cron tick. @logger.catch already logged the traceback.
     try:
-        await execute_browser_tasks(headless=headless)
+        await _run_task_with_timeout(headless=headless)
     except Exception as err:
         logger.error(
             "Immediate collection run failed; the scheduler will retry later | err={!r}",
@@ -127,7 +148,7 @@ async def deploy():
 
     # Strategy 1: Thursday 23:30 → Friday 03:30, every hour (Beijing Time)
     scheduler.add_job(
-        execute_browser_tasks,
+        _run_task_with_timeout,
         trigger=CronTrigger(
             day_of_week="thu", hour="23,0,1,2,3", minute="30", timezone="Asia/Shanghai"
         ),
@@ -140,7 +161,7 @@ async def deploy():
 
     # Strategy 2: Daily at 12:00 PM (Beijing Time)
     scheduler.add_job(
-        execute_browser_tasks,
+        _run_task_with_timeout,
         trigger=CronTrigger(hour="12", minute="0", timezone="Asia/Shanghai"),
         id="daily_epic_games_task",
         name="daily_epic_games_task",
