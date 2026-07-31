@@ -4,7 +4,7 @@
 
 `epic-free` 是 [`epic-freebies-helper`](https://github.com/Ronchy2000/epic-freebies-helper) 的重构版本：
 
-- **统一的 LLM 提供方**：把原先散落在独立分支的 OpenAI 兼容能力合并进主线，`gemini` / `glm` / `openai` 三种 provider 共用一套配置，`glm` 与 `openai` 共享同一个 OpenAI 兼容客户端。
+- **多 LLM 提供方**：支持 `openai`（Chat Completions / Responses API）、`anthropic`（Messages API）、`gemini`（原生 GenAI SDK）三种 provider。GLM / 智谱不再需要单独的 provider — 它使用与 OpenAI 相同的 Chat Completions 格式，GLM 特殊行为（raw-base64 图片编码、thinking 模式）从模型名自动检测。
 - **更好的性能**：所有 HTTP 调用（LLM 推理 + 周免游戏列表抓取）复用一个带连接池的 `httpx.AsyncClient`；`get_promotions()` 改为异步，不再阻塞事件循环。
 - **干净的工程结构**：标准 `src/` 布局，正确的包内 import，移除冗余且配置已失效的 Celery，仅保留 APScheduler。
 
@@ -12,7 +12,7 @@
 
 1. 用 Playwright / Camoufox 启动浏览器，自动登录 Epic 账号（账号需**关闭 2FA**）。
 2. 拉取本周免费游戏列表，跳过已入库的游戏。
-3. 进入商品页点击领取，遇到 hCaptcha 时用大模型（Gemini / GLM / OpenAI）解题。
+3. 进入商品页点击领取，遇到 hCaptcha 时用大模型解题。
 4. 完成结账，游戏进入你的 Epic 游戏库。
 5. 通过 APScheduler 定时重跑（北京时间每周四 23:30→周五 03:30 每小时一次，每天 12:00 一次）。
 
@@ -37,15 +37,31 @@ uv run epic-free
 
 | `LLM_PROVIDER` | 需要填写 | 默认模型 | 说明 |
 |---|---|---|---|
-| `openai` | `OPENAI_API_KEY` | `gpt-4.1-mini` | OpenAI 或任意兼容网关（需支持 `image_url`） |
-| `glm` | `GLM_API_KEY` | `glm-4.5v` | 智谱 GLM，OpenAI 兼容接口 |
+| `openai` | `OPENAI_API_KEY` | `gpt-4.1-mini` | OpenAI 或任意兼容网关；支持 Chat Completions（默认）和 Responses API 两种格式 |
+| `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-5` | Anthropic Messages API（Claude 模型） |
 | `gemini` | `GEMINI_API_KEY` | `gemini-2.5-pro` | 官方 Gemini 或 AiHubMix 中转（`GEMINI_BASE_URL`） |
 
-`LLM_PROVIDER` 留空时会根据已填写的 key 自动判断。四个验证码子模型（`CHALLENGE_CLASSIFIER_MODEL` 等）留空时自动跟随所选 provider 的默认模型。
+> **GLM / 智谱**：使用 `openai` provider，将 `OPENAI_BASE_URL` 指向 GLM 端点、`OPENAI_MODEL` 设为 `glm-*` 模型即可。GLM 的特殊行为（raw-base64 图片编码、thinking 模式）从模型名自动检测，无需额外配置。
+
+### OpenAI 两种 API 格式
+
+`openai` provider 通过 `OPENAI_API_FORMAT` 选择线格式：
+
+| 格式 | 值 | 端点 | 适用场景 |
+|---|---|---|---|
+| Chat Completions（默认） | `chat` | `/chat/completions` | 任何 OpenAI 兼容中转、GLM、Azure 等 |
+| Responses API | `responses` | `/responses` | OpenAI 官方 API（Chat Completions 未来将废弃） |
+
+```bash
+OPENAI_API_FORMAT=chat       # 默认，兼容所有 OpenAI 兼容端点
+OPENAI_API_FORMAT=responses  # 使用 OpenAI Responses API
+```
+
+`LLM_PROVIDER` 留空时会根据已填写的 key 自动判断（优先级 `openai → anthropic → gemini`）。四个验证码子模型（`CHALLENGE_CLASSIFIER_MODEL` 等）留空时自动跟随所选 provider 的默认模型。
 
 ## GitHub Actions（无需服务器）
 
-没有服务器 / NAS，或租用的机器跑不动 Docker，可以让 GitHub 替你跑：每周四晚到周五凌晨在 GitHub 的免费 runner 上定时领取 3 次（北京时间 周四 23:20 / 周五 00:20 / 01:20），每次独立 runner、命中率叠加。工作流见 [`.github/workflows/claim.yml`](.github/workflows/claim.yml)（参照上游 `epic-freebies-helper` 适配，并补上了 `openai` provider）。
+没有服务器 / NAS，或租用的机器跑不动 Docker，可以让 GitHub 替你跑：每周四晚到周五凌晨在 GitHub 的免费 runner 上定时领取 3 次（北京时间 周四 23:20 / 周五 00:20 / 01:20），每次独立 runner、命中率叠加。工作流见 [`.github/workflows/claim.yml`](.github/workflows/claim.yml)。
 
 > [!NOTE]
 > GitHub runner 用的是机房公网 IP，Epic / hCaptcha 风控更严：验证码成功率比家用住宅 IP 低，单次运行可能 10–20 分钟并伴随多次重试——这是该模式的固有代价，不代表脚本失效。有常驻服务器的话仍建议用下面的 Docker 部署。
@@ -68,12 +84,12 @@ uv run epic-free
 | `EPIC_EMAIL` | your_epic@example.com |
 | `EPIC_PASSWORD` | your_password |
 
-**provider 三选一**（`LLM_PROVIDER` 填 `openai` / `glm` / `gemini`，并填对应那一组 key；其余 provider 的 Secret 不建即可，空值会被自动忽略）：
+**provider 三选一**（`LLM_PROVIDER` 填 `openai` / `anthropic` / `gemini`，并填对应那一组 key；其余 provider 的 Secret 不建即可，空值会被自动忽略）：
 
 | `LLM_PROVIDER` | 需要的 Secret |
 |---|---|
-| `openai` | `OPENAI_API_KEY`（可选 `OPENAI_BASE_URL` / `OPENAI_MODEL`） |
-| `glm` | `GLM_API_KEY`（可选 `GLM_BASE_URL` / `GLM_MODEL`） |
+| `openai` | `OPENAI_API_KEY`（可选 `OPENAI_BASE_URL` / `OPENAI_MODEL` / `OPENAI_API_FORMAT`） |
+| `anthropic` | `ANTHROPIC_API_KEY`（可选 `ANTHROPIC_BASE_URL` / `ANTHROPIC_MODEL`） |
 | `gemini` | `GEMINI_API_KEY`（可选 `GEMINI_BASE_URL` / `GEMINI_MODEL`） |
 
 ### 3. 手动跑一次 / 等定时
@@ -143,11 +159,13 @@ cd epic-free
 
 | `LLM_PROVIDER` | 需要填的环境变量 | 默认模型 |
 |---|---|---|
-| `openai` | `OPENAI_API_KEY`（可选 `OPENAI_BASE_URL` / `OPENAI_MODEL`） | `gpt-4.1-mini` |
-| `glm` | `GLM_API_KEY`（可选 `GLM_BASE_URL` / `GLM_MODEL`） | `glm-4.5v` |
+| `openai` | `OPENAI_API_KEY`（可选 `OPENAI_BASE_URL` / `OPENAI_MODEL` / `OPENAI_API_FORMAT`） | `gpt-4.1-mini` |
+| `anthropic` | `ANTHROPIC_API_KEY`（可选 `ANTHROPIC_BASE_URL` / `ANTHROPIC_MODEL`） | `claude-sonnet-5` |
 | `gemini` | `GEMINI_API_KEY`（可选 `GEMINI_BASE_URL` / `GEMINI_MODEL`） | `gemini-2.5-pro` |
 
-`docker-compose.yaml` 里已用注释列出了 GLM / Gemini 的对照配置，取消注释、填上对应 key 即可。`LLM_PROVIDER` 留空时会根据已填的 key 自动判断。
+> **GLM / 智谱**：设 `LLM_PROVIDER=openai`，`OPENAI_BASE_URL` 指向 GLM 端点（如 `https://open.bigmodel.cn/api/paas/v4`），`OPENAI_MODEL` 设为 `glm-4.5v` 即可。GLM 特殊行为从模型名自动检测。
+
+`docker-compose.yaml` 里已用注释列出了 Anthropic / Gemini 的对照配置，取消注释、填上对应 key 即可。`LLM_PROVIDER` 留空时会根据已填的 key 自动判断。
 
 > 密码里如果含 `$`、`\`、`#`、`` ` `` 等特殊字符，请用单引号包裹整行：`EPIC_PASSWORD='ab$cd'`。
 
@@ -217,7 +235,10 @@ docker run -d --name epic-free \
 
 ## 相比原项目的改动一览
 
-- 新增 `LLM_PROVIDER=openai`，与 `glm` 共享 `epic_free.llm.openai_compat.OpenAICompatibleClient`。
+- 新增 `LLM_PROVIDER=anthropic`（Anthropic Messages API，Claude 模型）。
+- 新增 `OPENAI_API_FORMAT=responses`（OpenAI Responses API 支持）。
+- `glm` 合并进 `openai` provider — GLM 使用与 OpenAI 相同的 Chat Completions 格式，特殊行为从模型名自动检测。
+- 提取共享 LLM 客户端逻辑到 `llm/base.py`（`_BaseAsyncModels` 基类）。
 - 共享 `httpx.AsyncClient`（连接池），取代每次推理新建连接。
 - `get_promotions()` 异步化。
 - 移除 Celery（其 task 模块路径在原项目中已失效），统一用 APScheduler。
