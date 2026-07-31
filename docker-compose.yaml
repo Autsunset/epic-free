@@ -17,18 +17,24 @@ services:
       - EPIC_PASSWORD=your_password
 
       # ----------------------------------------
-      # LLM provider — pick ONE: gemini | glm | openai
+      # LLM provider — pick ONE: openai | anthropic | gemini
+      # GLM/ZhipuAI users: use openai with OPENAI_BASE_URL pointed at the GLM
+      # endpoint and OPENAI_MODEL set to a glm-* model.
       # ----------------------------------------
+
+      # --- OpenAI (Chat Completions or Responses API) ---
       - LLM_PROVIDER=openai
       - OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
       - OPENAI_BASE_URL=https://api.openai.com/v1
       - OPENAI_MODEL=gpt-4.1-mini
+      # Wire format: chat (default) | responses
+      # - OPENAI_API_FORMAT=chat
 
-      # Switch to GLM (ZhipuAI) instead:
-      # - LLM_PROVIDER=glm
-      # - GLM_API_KEY=your_glm_api_key
-      # - GLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4
-      # - GLM_MODEL=glm-4.5v
+      # Switch to Anthropic (Claude models) instead:
+      # - LLM_PROVIDER=anthropic
+      # - ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxxxxxxxxxx
+      # - ANTHROPIC_BASE_URL=https://api.anthropic.com
+      # - ANTHROPIC_MODEL=claude-sonnet-5
 
       # Switch to Gemini / AiHubMix instead:
       # - LLM_PROVIDER=gemini
@@ -68,17 +74,11 @@ services:
       # - WAIT_FOR_CHALLENGE_VIEW_TO_RENDER_MS=1500
       #
       # Per-task model overrides — leave empty to follow the provider's default
-      # model set above (OPENAI_MODEL / GLM_MODEL / GEMINI_MODEL).
+      # model set above (OPENAI_MODEL / ANTHROPIC_MODEL / GEMINI_MODEL).
       # - CHALLENGE_CLASSIFIER_MODEL=
       # - IMAGE_CLASSIFIER_MODEL=
       # - SPATIAL_POINT_REASONER_MODEL=
       # - SPATIAL_PATH_REASONER_MODEL=
-      #
-      # NOTE: the upstream docker-compose also lists CONSTRAINT_RESPONSE_SCHEMA and
-      # *_THINKING_BUDGET (IMAGE_CLASSIFIER_THINKING_BUDGET, SPatial_*). These are
-      # NOT fields in the current hcaptcha-challenger AgentConfig, so they are
-      # silently ignored (settings use extra="ignore") — they have no effect here
-      # nor in the original project.
 
     volumes:
       - "./volumes/:/app/volumes/"
