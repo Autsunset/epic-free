@@ -12,9 +12,13 @@ _PROVIDER_ENV = [
     "GEMINI_API_KEY",
     "GLM_API_KEY",
     "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
     "GEMINI_MODEL",
     "GLM_MODEL",
     "OPENAI_MODEL",
+    "OPENAI_API_FORMAT",
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_BASE_URL",
     "CHALLENGE_CLASSIFIER_MODEL",
     "IMAGE_CLASSIFIER_MODEL",
     "SPATIAL_POINT_REASONER_MODEL",
@@ -37,13 +41,13 @@ def _make(**kwargs) -> EpicSettings:
 
 # --------------------------------------------------------------------------- provider detection
 def test_provider_autodetect_prefers_openai():
-    s = _make(OPENAI_API_KEY="ok", GLM_API_KEY="gk", GEMINI_API_KEY="gemk")
+    s = _make(OPENAI_API_KEY="ok", ANTHROPIC_API_KEY="ak", GEMINI_API_KEY="gemk")
     assert s.LLM_PROVIDER == "openai"
 
 
-def test_provider_autodetect_glm_when_no_openai():
-    s = _make(GLM_API_KEY="gk", GEMINI_API_KEY="gemk")
-    assert s.LLM_PROVIDER == "glm"
+def test_provider_autodetect_anthropic_when_no_openai():
+    s = _make(ANTHROPIC_API_KEY="ak", GEMINI_API_KEY="gemk")
+    assert s.LLM_PROVIDER == "anthropic"
 
 
 def test_provider_autodetect_gemini_fallback():
@@ -51,9 +55,15 @@ def test_provider_autodetect_gemini_fallback():
     assert s.LLM_PROVIDER == "gemini"
 
 
-def test_explicit_provider_is_respected_over_detection():
-    s = _make(LLM_PROVIDER="glm", OPENAI_API_KEY="ok", GLM_API_KEY="gk")
-    assert s.LLM_PROVIDER == "glm"
+def test_legacy_glm_key_migrates_to_openai():
+    s = _make(GLM_API_KEY="gk", GEMINI_API_KEY="gemk")
+    assert s.LLM_PROVIDER == "openai"
+    assert s.OPENAI_API_KEY.get_secret_value() == "gk"
+
+
+def test_legacy_glm_provider_value_migrates_to_openai():
+    s = _make(LLM_PROVIDER="glm", OPENAI_API_KEY="ok")
+    assert s.LLM_PROVIDER == "openai"
 
 
 def test_blank_provider_with_only_gemini_key_is_gemini():
@@ -78,10 +88,16 @@ def test_gemini_key_seeded_from_openai():
     assert s.GEMINI_API_KEY.get_secret_value() == "ok"
 
 
-def test_gemini_key_seeded_from_glm_when_no_openai():
+def test_gemini_key_seeded_from_legacy_glm_key():
     s = _make(GLM_API_KEY="gk")
     assert s.GEMINI_API_KEY is not None
     assert s.GEMINI_API_KEY.get_secret_value() == "gk"
+
+
+def test_gemini_key_seeded_from_anthropic():
+    s = _make(ANTHROPIC_API_KEY="ak")
+    assert s.GEMINI_API_KEY is not None
+    assert s.GEMINI_API_KEY.get_secret_value() == "ak"
 
 
 def test_existing_gemini_key_is_preserved():

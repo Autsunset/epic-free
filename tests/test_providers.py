@@ -1,10 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Tests for the unified LLM compatibility layer.
+"""Tests for the LLM compatibility layer.
 
-These cover the response-normalization helpers shared by the ``glm`` and
-``openai`` providers, plus the image-part encoding difference between them
-(OpenAI / OpenAI-compatible gateways need a ``data:`` URL; GLM accepts raw
-base64).
+These cover:
+* The response-normalization helpers shared by all OpenAI-compatible providers.
+* The Chat Completions payload shape and image encoding (OpenAI data-URL vs GLM
+  raw-base64, auto-detected from the model name).
+* The Responses API payload shape (``input`` / ``input_text`` / ``input_image`` /
+  ``text.format``).
+* The Anthropic Messages API payload shape (top-level ``system``, ``image``
+  content with ``source.type=base64``, ``max_tokens``).
+* The reasoning-tag stripper and upload-store cap.
 """
 
 import json
@@ -17,12 +22,10 @@ from hcaptcha_challenger.models import (
 )
 from pydantic import BaseModel, SecretStr
 
-from epic_free.llm.openai_compat import (
-    _MAX_STORED_UPLOADS,
-    _AsyncFiles,
-    _AsyncModels,
-    _strip_reasoning,
-)
+from epic_free.llm.anthropic import _AnthropicModels
+from epic_free.llm.base import _MAX_STORED_UPLOADS, _AsyncFiles, _strip_reasoning
+from epic_free.llm.openai_compat import _AsyncModels
+from epic_free.llm.openai_responses import _ResponsesModels
 from epic_free.llm.parse import (
     _coerce_payload_for_schema,
     _extract_json_payload,
@@ -31,7 +34,7 @@ from epic_free.llm.parse import (
 
 
 # ---------------------------------------------------------------------------
-# Shared response normalization (exercises glm + openai parsing path)
+# Shared response normalization (exercises the parsing path for all providers)
 # ---------------------------------------------------------------------------
 def test_area_select_box_answer_is_converted_to_click_points():
     text = '{"answer":[[781,525,889,624],[1031,525,1139,624]]}'
@@ -115,64 +118,316 @@ def test_router_drag_multi_alias_matches_current_schema_enum():
 
 
 # ---------------------------------------------------------------------------
-# Image-part encoding differs by provider (the OpenAI-merge key behavior)
+# Test fixtures: minimal settings stubs
 # ---------------------------------------------------------------------------
 class _FakeSettings:
-    """Minimal settings stub so we can build _AsyncModels without hcaptcha config."""
+    """Minimal settings stub so we can build model handlers without hcaptcha config."""
 
     OPENAI_API_KEY = SecretStr("sk-test")
     OPENAI_BASE_URL = "https://api.openai.com/v1"
-    GLM_API_KEY = SecretStr("glm-test")
-    GLM_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
+    ANTHROPIC_API_KEY = SecretStr("sk-ant-test")
+    ANTHROPIC_BASE_URL = "https://api.anthropic.com"
 
 
-def _models(provider_name: str, data_url_images: bool) -> _AsyncModels:
+def _chat_models() -> _AsyncModels:
     return _AsyncModels(
         _FakeSettings(),
         {},
-        provider_name=provider_name,
-        api_key_attr="OPENAI_API_KEY" if provider_name == "OpenAI" else "GLM_API_KEY",
-        base_url_attr="OPENAI_BASE_URL" if provider_name == "OpenAI" else "GLM_BASE_URL",
-        data_url_images=data_url_images,
+        provider_name="OpenAI",
+        api_key_attr="OPENAI_API_KEY",
+        base_url_attr="OPENAI_BASE_URL",
     )
 
 
-def test_openai_image_part_is_a_data_url():
-    models = _models("OpenAI", data_url_images=True)
-    part = models._to_image_part(b"\x89PNG\r\n\x1a\n", "image/png")
-    assert part["type"] == "image_url"
-    assert part["image_url"]["url"].startswith("data:image/png;base64,")
+def _responses_models() -> _ResponsesModels:
+    return _ResponsesModels(
+        _FakeSettings(),
+        {},
+        provider_name="OpenAI",
+        api_key_attr="OPENAI_API_KEY",
+        base_url_attr="OPENAI_BASE_URL",
+    )
 
 
-def test_glm_image_part_uses_raw_base64():
-    models = _models("GLM", data_url_images=False)
-    part = models._to_image_part(b"\x89PNG\r\n\x1a\n", "image/png")
-    assert part["type"] == "image_url"
-    # GLM accepts the compact raw-base64 form (no data: prefix).
-    assert not part["image_url"]["url"].startswith("data:")
+def _anthropic_models() -> _AnthropicModels:
+    return _AnthropicModels(
+        _FakeSettings(),
+        {},
+        provider_name="Anthropic",
+        api_key_attr="ANTHROPIC_API_KEY",
+        base_url_attr="ANTHROPIC_BASE_URL",
+    )
 
 
-@pytest.mark.parametrize("provider_name,data_url", [("OpenAI", True), ("GLM", False)])
-def test_chat_completions_payload_shape(provider_name, data_url):
-    models = _models(provider_name, data_url)
-
+def _text_content(prompt: str):
     class _Part:
-        text = "find the cat"
+        text = prompt
 
     class _Content:
         role = "user"
         parts = [_Part()]
 
+    return _Content()
+
+
+# ---------------------------------------------------------------------------
+# Chat Completions: image encoding (GLM raw-base64 auto-detected from model name)
+# ---------------------------------------------------------------------------
+def test_openai_image_part_is_a_data_url():
+    models = _chat_models()
+    part = models._image_item(b"\x89PNG\r\n\x1a\n", "image/png")
+    assert part["type"] == "image_url"
+    assert part["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_glm_image_part_uses_raw_base64():
+    models = _chat_models()
+    models._current_model = "glm-4.5v"
+    part = models._image_item(b"\x89PNG\r\n\x1a\n", "image/png")
+    assert part["type"] == "image_url"
+    # GLM accepts the compact raw-base64 form (no data: prefix).
+    assert not part["image_url"]["url"].startswith("data:")
+
+
+# ---------------------------------------------------------------------------
+# Chat Completions: payload shape
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("model", ["gpt-4.1-mini", "glm-4.5v"])
+def test_chat_completions_payload_shape(model):
+    models = _chat_models()
+
     class _Config:
         system_instruction = "You solve hCaptcha."
 
     payload = models._build_payload(
-        model="gpt-4.1-mini", contents=[_Content()], config=_Config(), kwargs={}
+        model=model, contents=[_text_content("find the cat")], config=_Config(), kwargs={}
     )
-    assert payload["model"] == "gpt-4.1-mini"
+    assert payload["model"] == model
     # system message comes first, then the user message
     assert payload["messages"][0]["role"] == "system"
     assert payload["messages"][1]["role"] == "user"
+
+
+def test_glm_thinking_mode_is_emitted_for_glm_45_models():
+    models = _chat_models()
+
+    class _Config:
+        thinking_config = {"include_thoughts": True}
+
+    payload = models._build_payload(
+        model="glm-4.5v", contents=[_text_content("solve")], config=_Config(), kwargs={}
+    )
+    assert payload["thinking"] == {"type": "enabled"}
+
+
+def test_glm_thinking_mode_is_not_emitted_for_non_glm_models():
+    models = _chat_models()
+
+    class _Config:
+        thinking_config = {"include_thoughts": True}
+
+    payload = models._build_payload(
+        model="gpt-4.1-mini", contents=[_text_content("solve")], config=_Config(), kwargs={}
+    )
+    assert "thinking" not in payload
+
+
+# ---------------------------------------------------------------------------
+# Responses API: payload shape
+# ---------------------------------------------------------------------------
+def test_responses_payload_uses_input_not_messages():
+    models = _responses_models()
+
+    class _Config:
+        system_instruction = "You solve hCaptcha."
+
+    payload = models._build_payload(
+        model="gpt-4.1-mini", contents=[_text_content("find the cat")], config=_Config(), kwargs={}
+    )
+    assert "messages" not in payload
+    assert "input" in payload
+    # developer role for system, then user
+    assert payload["input"][0]["role"] == "developer"
+    assert payload["input"][1]["role"] == "user"
+
+
+def test_responses_uses_input_text_and_input_image_content_types():
+    models = _responses_models()
+
+    class _InlineData:
+        data = b"\x89PNG\r\n\x1a\n"
+        mime_type = "image/png"
+
+    class _ImagePart:
+        inline_data = _InlineData()
+
+    class _Content:
+        role = "user"
+        parts = [_ImagePart()]
+
+    class _Config:
+        pass
+
+    payload = models._build_payload(
+        model="gpt-4.1-mini", contents=[_Content()], config=_Config(), kwargs={}
+    )
+    # Find the user message (a system/developer message is prepended for the
+    # coordinate hint when images are present).
+    user_msg = next(item for item in payload["input"] if item["role"] == "user")
+    user_content = user_msg["content"]
+    assert user_content[0]["type"] == "input_image"
+    assert user_content[0]["image_url"].startswith("data:image/png;base64,")
+
+
+def test_responses_json_mode_uses_text_format():
+    models = _responses_models()
+
+    class _Schema(BaseModel):
+        checkout_open: bool
+
+    class _Config:
+        response_schema = _Schema
+
+    payload = models._build_payload(
+        model="gpt-4.1-mini", contents=[_text_content("describe")], config=_Config(), kwargs={}
+    )
+    assert payload["text"] == {"format": {"type": "json_object"}}
+    # should NOT have the chat-completions response_format key
+    assert "response_format" not in payload
+
+
+def test_responses_image_url_is_a_string_not_object():
+    models = _responses_models()
+    part = models._image_item(b"\x89PNG\r\n\x1a\n", "image/png")
+    assert part["type"] == "input_image"
+    # Responses API: image_url is a string, not {"url": "..."}
+    assert isinstance(part["image_url"], str)
+    assert part["image_url"].startswith("data:image/png;base64,")
+
+
+# ---------------------------------------------------------------------------
+# Responses API: response text extraction
+# ---------------------------------------------------------------------------
+def test_responses_extract_text_from_output_text_field():
+    models = _responses_models()
+    data = {"output_text": '{"answer": "yes"}'}
+    assert models._extract_text(data) == '{"answer": "yes"}'
+
+
+def test_responses_extract_text_fallback_to_output_array():
+    models = _responses_models()
+    data = {
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": '{"answer": 42}'}],
+            }
+        ]
+    }
+    assert models._extract_text(data) == '{"answer": 42}'
+
+
+# ---------------------------------------------------------------------------
+# Anthropic Messages API: payload shape
+# ---------------------------------------------------------------------------
+def test_anthropic_payload_has_system_and_max_tokens():
+    models = _anthropic_models()
+
+    class _Config:
+        system_instruction = "You solve hCaptcha."
+
+    payload = models._build_payload(
+        model="claude-sonnet-5",
+        contents=[_text_content("find the cat")],
+        config=_Config(),
+        kwargs={},
+    )
+    assert payload["model"] == "claude-sonnet-5"
+    assert payload["system"] == "You solve hCaptcha."
+    assert payload["max_tokens"] == 4096
+    # system is NOT in messages (it's a top-level field)
+    assert all(msg["role"] != "system" for msg in payload["messages"])
+    assert payload["messages"][0]["role"] == "user"
+
+
+def test_anthropic_uses_text_and_image_content_types():
+    models = _anthropic_models()
+
+    class _InlineData:
+        data = b"\x89PNG\r\n\x1a\n"
+        mime_type = "image/png"
+
+    class _ImagePart:
+        inline_data = _InlineData()
+
+    class _Content:
+        role = "user"
+        parts = [_ImagePart()]
+
+    class _Config:
+        pass
+
+    payload = models._build_payload(
+        model="claude-sonnet-5", contents=[_Content()], config=_Config(), kwargs={}
+    )
+    image_item = payload["messages"][0]["content"][0]
+    assert image_item["type"] == "image"
+    assert image_item["source"]["type"] == "base64"
+    assert image_item["source"]["media_type"] == "image/png"
+    assert isinstance(image_item["source"]["data"], str)
+
+
+def test_anthropic_has_no_response_format():
+    models = _anthropic_models()
+
+    class _Schema(BaseModel):
+        checkout_open: bool
+
+    class _Config:
+        response_schema = _Schema
+
+    payload = models._build_payload(
+        model="claude-sonnet-5", contents=[_text_content("describe")], config=_Config(), kwargs={}
+    )
+    # Anthropic has no JSON-mode parameter — schema is injected via prompt only.
+    assert "response_format" not in payload
+    assert "text" not in payload
+    # but the schema text should be in the system field
+    assert "checkout_open" in payload["system"]
+
+
+def test_anthropic_headers_use_api_key_not_bearer():
+    models = _anthropic_models()
+    headers = models._get_headers()
+    assert headers["x-api-key"] == "sk-ant-test"
+    assert headers["anthropic-version"] == "2023-06-01"
+    assert "Authorization" not in headers
+
+
+def test_anthropic_endpoint_appends_v1_messages():
+    models = _anthropic_models()
+    assert models._get_endpoint() == "https://api.anthropic.com/v1/messages"
+
+
+# ---------------------------------------------------------------------------
+# Anthropic: response text extraction
+# ---------------------------------------------------------------------------
+def test_anthropic_extract_text_from_content_blocks():
+    models = _anthropic_models()
+    data = {"content": [{"type": "text", "text": '{"answer": "yes"}'}]}
+    assert models._extract_text(data) == '{"answer": "yes"}'
+
+
+def test_anthropic_extract_text_skips_thinking_blocks():
+    models = _anthropic_models()
+    data = {
+        "content": [
+            {"type": "thinking", "thinking": "let me think..."},
+            {"type": "text", "text": '{"answer": 42}'},
+        ]
+    }
+    assert models._extract_text(data) == '{"answer": 42}'
 
 
 # ---------------------------------------------------------------------------
@@ -205,9 +460,9 @@ def test_strip_reasoning_drops_unclosed_think_tail():
 
 
 # ---------------------------------------------------------------------------
-# response_schema must be spelled out in the prompt (the OpenAI wire format has
-# no schema slot every gateway honours), or the model invents its own field
-# names and downstream validation fails.
+# response_schema must be spelled out in the prompt (none of the OpenAI/Anthropic
+# wire formats have a universally honoured schema slot), or the model invents its
+# own field names and downstream validation fails.
 # ---------------------------------------------------------------------------
 class _Desc(BaseModel):
     checkout_open: bool
@@ -215,19 +470,8 @@ class _Desc(BaseModel):
     summary: str
 
 
-def _text_content(prompt: str):
-    class _Part:
-        text = prompt
-
-    class _Content:
-        role = "user"
-        parts = [_Part()]
-
-    return _Content()
-
-
-def test_response_schema_field_names_are_injected_into_prompt():
-    models = _models("OpenAI", data_url_images=True)
+def test_chat_response_schema_field_names_injected_into_prompt():
+    models = _chat_models()
 
     class _Config:
         system_instruction = "You solve hCaptcha."
@@ -248,8 +492,8 @@ def test_response_schema_field_names_are_injected_into_prompt():
     assert payload["response_format"] == {"type": "json_object"}
 
 
-def test_no_response_schema_means_no_schema_prompt_or_response_format():
-    models = _models("OpenAI", data_url_images=True)
+def test_chat_no_response_schema_means_no_schema_prompt_or_response_format():
+    models = _chat_models()
 
     class _Config:
         system_instruction = "You solve hCaptcha."

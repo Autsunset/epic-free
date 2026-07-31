@@ -1,14 +1,19 @@
 # -*- coding: utf-8 -*-
 """Application configuration.
 
-Merges three LLM providers into one settings model:
+Supports three LLM providers:
 
-* ``gemini`` — native Google GenAI SDK (optionally via a Gemini-compatible relay)
-* ``glm``    — OpenAI-compatible Chat Completions endpoint (ZhipuAI / BigModel)
-* ``openai`` — OpenAI-compatible Chat Completions endpoint (OpenAI or any relay)
+* ``openai``   — OpenAI-compatible endpoint. Two wire formats controlled by
+                  ``OPENAI_API_FORMAT``: ``chat`` (Chat Completions, the default,
+                  works with any OpenAI-compatible relay including GLM/ZhipuAI)
+                  and ``responses`` (the newer OpenAI Responses API).
+* ``anthropic`` — Anthropic Messages API (Claude models).
+* ``gemini``   — native Google GenAI SDK (optionally via a Gemini-compatible relay).
 
-``glm`` and ``openai`` share the same wire format and are served by a single
-client (:class:`epic_free.llm.openai_compat.OpenAICompatibleClient`).
+GLM/ZhipuAI is not a separate provider — it speaks the same Chat Completions
+format as OpenAI. Point ``OPENAI_BASE_URL`` at the GLM endpoint and set
+``OPENAI_MODEL`` to a ``glm-*`` model; GLM-specific quirks (raw-base64 image
+encoding, thinking mode) are auto-detected from the model name.
 """
 
 import os
@@ -17,6 +22,7 @@ from pathlib import Path
 os.environ.setdefault("MPLBACKEND", "Agg")
 
 from hcaptcha_challenger.agent import AgentConfig
+from loguru import logger
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import SettingsConfigDict
 
@@ -32,7 +38,7 @@ SCREENSHOTS_DIR = VOLUMES_DIR.joinpath("screenshots")
 RECORD_DIR = VOLUMES_DIR.joinpath("record")
 HCAPTCHA_DIR = VOLUMES_DIR.joinpath("hcaptcha")
 
-SUPPORTED_PROVIDERS = ("gemini", "glm", "openai")
+SUPPORTED_PROVIDERS = ("gemini", "openai", "anthropic")
 
 
 def _env(name: str, default: str | None = None) -> str | None:
@@ -52,57 +58,70 @@ def _coerce_secret(value: object) -> str | None:
     return value or None
 
 
-def _resolve_provider(provider: object, openai_key: object, glm_key: object) -> str:
+def _resolve_provider(provider: object, openai_key: object, anthropic_key: object) -> str:
     """Return the LLM provider, auto-detecting from the first present key.
 
-    Detection order is ``openai → glm → gemini``. Shared by both the before- and
-    after-validators so the fallback logic lives in exactly one place.
+    Detection order is ``openai → anthropic → gemini``. The legacy ``glm``
+    value is silently mapped to ``openai`` (GLM shares the same Chat Completions
+    wire format). Shared by both the before- and after-validators so the fallback
+    logic lives in exactly one place.
     """
     provider = str(provider or "").strip().lower()
+    # Migration: glm merged into openai (same Chat Completions wire format).
+    if provider == "glm":
+        logger.info("LLM_PROVIDER=glm is deprecated; GLM now uses the openai provider.")
+        provider = "openai"
     if provider in SUPPORTED_PROVIDERS:
         return provider
-    return "openai" if openai_key else ("glm" if glm_key else "gemini")
+    return "openai" if openai_key else ("anthropic" if anthropic_key else "gemini")
 
 
-def _seed_gemini_key(gemini_key, openai_key, glm_key):
+def _seed_gemini_key(gemini_key, openai_key, anthropic_key):
     """Return the value to use for ``GEMINI_API_KEY``.
 
     ``hcaptcha-challenger`` reads ``GEMINI_API_KEY`` off its base model, so a
-    non-Gemini deploy still needs it populated. Keeps the existing key when set,
-    otherwise falls back to the openai/glm credential (in that order).
+    non-Gemini deploy still needs it populated (the value is never actually used
+    for API calls when the genai.Client is monkey-patched — it just needs to be
+    non-None so the base model constructs). Keeps the existing key when set,
+    otherwise falls back to openai → anthropic.
     """
     if gemini_key is not None:
         return gemini_key
     if openai_key is not None:
         return openai_key
-    return glm_key
+    return anthropic_key
 
 
 class EpicSettings(AgentConfig):
     model_config = SettingsConfigDict(env_file=".env", env_ignore_empty=True, extra="ignore")
 
     # ------------------------------------------------------------------ LLM provider
-    LLM_PROVIDER: str = Field(default="", description="Supported values: gemini, glm, openai")
+    LLM_PROVIDER: str = Field(default="", description="Supported values: openai, anthropic, gemini")
 
-    # --- Gemini (native GenAI SDK) ---
-    GEMINI_API_KEY: SecretStr | None = Field(default=None, description="Gemini / AiHubMix API key")
-    GEMINI_BASE_URL: str = Field(default="", description="Optional Gemini-compatible base URL")
-    GEMINI_MODEL: str = Field(default="gemini-2.5-pro", description="Gemini default model")
-
-    # --- GLM (OpenAI-compatible) ---
-    GLM_API_KEY: SecretStr | None = Field(default=None, description="GLM API key")
-    GLM_BASE_URL: str = Field(
-        default="https://open.bigmodel.cn/api/paas/v4",
-        description="GLM OpenAI-compatible base URL",
-    )
-    GLM_MODEL: str = Field(default="glm-4.5v", description="GLM vision-capable default model")
-
-    # --- OpenAI (OpenAI-compatible) ---
+    # --- OpenAI (Chat Completions or Responses API) ---
     OPENAI_API_KEY: SecretStr | None = Field(default=None, description="OpenAI API key")
     OPENAI_BASE_URL: str = Field(
         default="https://api.openai.com/v1", description="OpenAI API base URL"
     )
     OPENAI_MODEL: str = Field(default="gpt-4.1-mini", description="OpenAI vision-capable model")
+    OPENAI_API_FORMAT: str = Field(
+        default="chat",
+        description="OpenAI wire format: chat (Chat Completions, default) | responses (Responses API)",
+    )
+
+    # --- Anthropic (Messages API) ---
+    ANTHROPIC_API_KEY: SecretStr | None = Field(default=None, description="Anthropic API key")
+    ANTHROPIC_BASE_URL: str = Field(
+        default="https://api.anthropic.com", description="Anthropic API base URL"
+    )
+    ANTHROPIC_MODEL: str = Field(
+        default="claude-sonnet-5", description="Anthropic vision-capable default model"
+    )
+
+    # --- Gemini (native GenAI SDK) ---
+    GEMINI_API_KEY: SecretStr | None = Field(default=None, description="Gemini / AiHubMix API key")
+    GEMINI_BASE_URL: str = Field(default="", description="Optional Gemini-compatible base URL")
+    GEMINI_MODEL: str = Field(default="gemini-2.5-pro", description="Gemini default model")
 
     # ------------------------------------------------------------------ browser
     BROWSER_BACKEND: str = Field(
@@ -154,16 +173,33 @@ class EpicSettings(AgentConfig):
     def _bridge_provider_credentials(cls, raw_data):
         data = dict(raw_data) if isinstance(raw_data, dict) else {}
 
-        glm_key = _coerce_secret(data.get("GLM_API_KEY"))
         openai_key = _coerce_secret(data.get("OPENAI_API_KEY"))
         gemini_key = _coerce_secret(data.get("GEMINI_API_KEY"))
+        anthropic_key = _coerce_secret(data.get("ANTHROPIC_API_KEY"))
 
-        data["LLM_PROVIDER"] = _resolve_provider(data.get("LLM_PROVIDER"), openai_key, glm_key)
+        # Backward compat: GLM merged into openai (same Chat Completions wire format).
+        # If only legacy GLM_* vars are set, migrate them to OPENAI_*.
+        legacy_glm_key = _coerce_secret(data.get("GLM_API_KEY"))
+        if legacy_glm_key:
+            if openai_key is None:
+                data["OPENAI_API_KEY"] = legacy_glm_key
+                openai_key = legacy_glm_key
+                logger.info("Migrating GLM_API_KEY → OPENAI_API_KEY (GLM uses OpenAI Chat format).")
+            legacy_glm_base = (data.get("GLM_BASE_URL") or "").strip() or None
+            legacy_glm_model = (data.get("GLM_MODEL") or "").strip() or None
+            if legacy_glm_base and not _coerce_secret(data.get("OPENAI_BASE_URL")):
+                data["OPENAI_BASE_URL"] = legacy_glm_base
+            if legacy_glm_model and not _coerce_secret(data.get("OPENAI_MODEL")):
+                data["OPENAI_MODEL"] = legacy_glm_model
+
+        data["LLM_PROVIDER"] = _resolve_provider(
+            data.get("LLM_PROVIDER"), openai_key, anthropic_key
+        )
 
         # hcaptcha-challenger still reads GEMINI_API_KEY from its base model, so
         # seed it before field validation for non-Gemini environments.
         if gemini_key is None:
-            seeded = _seed_gemini_key(gemini_key, openai_key, glm_key)
+            seeded = _seed_gemini_key(gemini_key, openai_key, anthropic_key)
             if seeded is not None:
                 data["GEMINI_API_KEY"] = seeded
 
@@ -175,10 +211,11 @@ class EpicSettings(AgentConfig):
             "GEMINI_BASE_URL",
             "GEMINI_MODEL",
             "LLM_PROVIDER",
-            "GLM_BASE_URL",
-            "GLM_MODEL",
             "OPENAI_BASE_URL",
             "OPENAI_MODEL",
+            "OPENAI_API_FORMAT",
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_MODEL",
             "BROWSER_BACKEND",
             "EPIC_EMAIL",
             "CHALLENGE_CLASSIFIER_MODEL",
@@ -190,16 +227,21 @@ class EpicSettings(AgentConfig):
             if isinstance(value, str):
                 setattr(self, field_name, value.strip())
 
-        provider = _resolve_provider(self.LLM_PROVIDER, self.OPENAI_API_KEY, self.GLM_API_KEY)
+        provider = _resolve_provider(self.LLM_PROVIDER, self.OPENAI_API_KEY, self.ANTHROPIC_API_KEY)
         self.LLM_PROVIDER = provider
 
+        # Validate OPENAI_API_FORMAT (only meaningful for the openai provider).
+        self.OPENAI_API_FORMAT = (self.OPENAI_API_FORMAT or "chat").strip().lower()
+        if self.OPENAI_API_FORMAT not in ("chat", "responses"):
+            self.OPENAI_API_FORMAT = "chat"
+
         self.GEMINI_API_KEY = _seed_gemini_key(
-            self.GEMINI_API_KEY, self.OPENAI_API_KEY, self.GLM_API_KEY
+            self.GEMINI_API_KEY, self.OPENAI_API_KEY, self.ANTHROPIC_API_KEY
         )
 
         provider_default = {
             "openai": self.OPENAI_MODEL,
-            "glm": self.GLM_MODEL,
+            "anthropic": self.ANTHROPIC_MODEL,
             "gemini": self.GEMINI_MODEL,
         }[provider]
         for attr in (
@@ -232,17 +274,17 @@ class EpicSettings(AgentConfig):
         if provider == "openai" and self.OPENAI_API_KEY is None:
             return (
                 "Invalid LLM configuration: LLM_PROVIDER=openai but OPENAI_API_KEY is empty. "
-                "Set OPENAI_API_KEY, or switch LLM_PROVIDER to glm/gemini."
+                "Set OPENAI_API_KEY, or switch LLM_PROVIDER to anthropic/gemini."
             )
-        if provider == "glm" and self.GLM_API_KEY is None:
+        if provider == "anthropic" and self.ANTHROPIC_API_KEY is None:
             return (
-                "Invalid LLM configuration: LLM_PROVIDER=glm but GLM_API_KEY is empty. "
-                "Set GLM_API_KEY, or switch LLM_PROVIDER to openai/gemini."
+                "Invalid LLM configuration: LLM_PROVIDER=anthropic but ANTHROPIC_API_KEY is empty. "
+                "Set ANTHROPIC_API_KEY, or switch LLM_PROVIDER to openai/gemini."
             )
         if provider == "gemini" and self.GEMINI_API_KEY is None:
             return (
                 "Invalid LLM configuration: LLM_PROVIDER=gemini but GEMINI_API_KEY is empty. "
-                "Set GEMINI_API_KEY, or switch LLM_PROVIDER to openai/glm."
+                "Set GEMINI_API_KEY, or switch LLM_PROVIDER to openai/anthropic."
             )
         return None
 
