@@ -36,7 +36,7 @@ def apply_gemini_patch(settings: Any):
             if base_url:
                 if base_url.endswith("/v1"):
                     base_url = base_url[:-3]
-                if not base_url.endswith("/gemini"):
+                if "aihubmix" in base_url and not base_url.endswith("/gemini"):
                     base_url = f"{base_url}/gemini"
 
                 kwargs["http_options"] = types.HttpOptions(base_url=base_url)

@@ -516,3 +516,35 @@ async def test_uploaded_files_storage_is_capped():
         await files.upload(f"img-{i}".encode())
 
     assert len(storage) == _MAX_STORED_UPLOADS
+
+
+def test_apply_gemini_patch_base_url(monkeypatch):
+    from google import genai
+    from pydantic import SecretStr
+
+    from epic_free.llm.gemini import apply_gemini_patch
+
+    captured_kwargs = {}
+    orig_init = genai.Client.__init__
+
+    def fake_init(self, *args, **kwargs):
+        captured_kwargs.update(kwargs)
+
+    monkeypatch.setattr(genai.Client, "__init__", fake_init)
+
+    class _MockSettings:
+        GEMINI_API_KEY = SecretStr("test-key")
+        GEMINI_MODEL = "gemini-3.7-flash"
+        GEMINI_BASE_URL = "https://newapi.825680.xyz"
+
+    apply_gemini_patch(_MockSettings())
+    genai.Client()
+    assert captured_kwargs["http_options"].base_url == "https://newapi.825680.xyz"
+
+    # aihubmix gets /gemini appended
+    _MockSettings.GEMINI_BASE_URL = "https://aihubmix.com"
+    apply_gemini_patch(_MockSettings())
+    genai.Client()
+    assert captured_kwargs["http_options"].base_url == "https://aihubmix.com/gemini"
+
+    monkeypatch.setattr(genai.Client, "__init__", orig_init)
