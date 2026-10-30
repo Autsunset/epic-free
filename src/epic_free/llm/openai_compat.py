@@ -91,6 +91,10 @@ class _AsyncModels(_BaseAsyncModels):
             "model": model,
             "messages": all_messages,
         }
+        if effort := getattr(self._settings, "OPENAI_REASONING_EFFORT", ""):
+            payload["reasoning_effort"] = effort
+        if token_cap := getattr(self._settings, "OPENAI_MAX_TOKENS", 0):
+            payload["max_tokens"] = token_cap
 
         temperature = getattr(config, "temperature", None)
         if temperature is not None:

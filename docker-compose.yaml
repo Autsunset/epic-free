@@ -29,6 +29,9 @@ services:
       - OPENAI_MODEL=gpt-4.1-mini
       # Wire format: chat (default) | responses
       # - OPENAI_API_FORMAT=chat
+      # Optional Chat-only limits (leave unset unless your provider supports them):
+      # - OPENAI_REASONING_EFFORT=low
+      # - OPENAI_MAX_TOKENS=4096
 
       # Switch to Anthropic (Claude models) instead:
       # - LLM_PROVIDER=anthropic

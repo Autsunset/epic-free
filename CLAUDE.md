@@ -14,7 +14,8 @@ adds Anthropic + OpenAI Responses API support.
 
 ```bash
 uv sync                     # install (editable) + create .venv
-uv run camoufox fetch       # download the Camoufox browser binary
+uv run python scripts/download_browser.py --target ./volumes/camoufox-browser
+export CAMOUFOX_EXECUTABLE_PATH="$PWD/volumes/camoufox-browser/camoufox-bin"
 uv run epic-free            # run the app (reads .env)
 uv run pytest               # run tests
 uv run pytest tests/test_providers.py                  # one test file
@@ -60,12 +61,14 @@ Standard `src/` layout; the package is `epic_free`. Entry point is the
   - `patch.py` — dispatches `apply_llm_patch` based on `LLM_PROVIDER` +
     `OPENAI_API_FORMAT`.
 - `epic/`
-  - `auth.py` — `EpicAuthorization` (login + session validation). **Ported
-    verbatim from upstream master — do not rewrite**, the resilience is
-    battle-tested.
+  - `auth.py` — `EpicAuthorization` (login + session validation). Ported from
+    upstream, with targeted form-readiness and store-SSO compatibility fixes;
+    preserve the remaining resilience rather than rewriting it.
   - `store.py` — `EpicAgent` / `EpicGames` (claim flow). Same: ported, keep.
   - `promotions.py` — async `get_promotions()` (was a blocking sync call).
 - `browser.py` — `open_browser_context` (Camoufox → Playwright Firefox fallback).
+- `captcha.py` — per-agent bounded challenge-frame readiness for the
+  hcaptcha-challenger 0.19 frame-replacement race.
 - `cleanup.py` — `prune_old_files()`, a fail-soft (never raises) disk-retention
   pruner called once per collection run via `app._prune_old_artifacts()` to bound
   `volumes/` growth (records, debug screenshots, hCaptcha caches).

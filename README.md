@@ -21,17 +21,21 @@
 需要 Python ≥ 3.12 与 [uv](https://docs.astral.sh/uv/)。
 
 ```bash
-# 1. 安装依赖（会以可编辑模式安装本包，并拉取 Camoufox 浏览器）
-uv sync
-uv run camoufox fetch
+# 1. 安装锁定依赖与经过验证的 Linux 浏览器内核
+uv sync --frozen
+uv run python scripts/download_browser.py --target ./volumes/camoufox-browser
 
 # 2. 配置账号与 provider
 cp .env.example .env
 #   编辑 .env：填 EPIC_EMAIL / EPIC_PASSWORD，以及所选 provider 的 *_API_KEY
 
 # 3. 跑一次（ENABLE_APSCHEDULER=false 时只执行一次）
-uv run epic-free
+CAMOUFOX_EXECUTABLE_PATH="$PWD/volumes/camoufox-browser/camoufox-bin" uv run epic-free
 ```
+
+下载脚本支持 Linux x86_64 / arm64，会校验官方发布的 SHA-256。Docker 镜像已内置
+Camoufox `0.5.8` 和验证过的内核 `158.0.1-beta.41`，不需要运行本地下载命令。
+其他系统请安装对应平台的官方内核，并设置 `CAMOUFOX_EXECUTABLE_PATH`。
 
 ## LLM Provider
 
@@ -110,7 +114,7 @@ OPENAI_API_FORMAT=responses  # 使用 OpenAI Responses API
 | `epic-runtime-<run_id>` | `promotions` 缓存、`purchase_debug` 截图与调试文本 |
 | `epic-screenshots-<run_id>` | 登录 / 风控 / 授权阶段的截图 |
 
-看到 `Login success`、`All week-free games are already in the library` 或 `🎉 ...` 即正常。常见前提：账号需**关闭 2FA**（卡在 `/id/login/mfa` 即 2FA 未关）；若卡在 `privacy-policy` 页，先在自己浏览器手动登录确认一次再重跑。
+`Login success` 只代表初步登录响应；还应看到 `Epic store session verification success` 或 `Authentication completed`，确认商店会话可用。领取结果以 `All week-free games are already in the library` 或已确认的领取日志为准。若卡在账号验证或 `privacy-policy` 页，请先在自己的浏览器完成相应操作再重跑，不要仅凭初步登录日志判断领取成功。
 
 > [!TIP]
 > 与 Docker 模式不同，Actions 的 runner 每次跑完即销毁，**不保留登录会话**（每次都重新登录）。这也是机房 IP 下登录验证码偶发失败更明显的原因。
@@ -175,7 +179,7 @@ cd epic-free
 docker compose up -d
 ```
 
-首次启动会从 GHCR 拉取镜像（压缩后约 1 GB，含 Playwright + Camoufox 运行时；解压后磁盘占用更大），随后容器以后台守护方式运行：立刻跑一次领取，并按计划定时重跑。
+首次启动会从 GHCR 拉取镜像（包含浏览器运行时，体积较大），随后容器以后台守护方式运行：立刻跑一次领取，并按计划定时重跑。镜像在构建时安装锁定依赖，启动时不会自动重新同步或升级依赖。
 
 ### 4. 查看运行状态与日志
 
@@ -185,7 +189,7 @@ docker compose logs -f            # 实时跟踪日志（Ctrl+C 退出，不影�
 docker compose logs --tail=200    # 只看最近 200 行
 ```
 
-看到 `Login success`、`Free games collection completed`、`🎉 ...` 即代表正常；`Authentication failed` 通常是账号密码错误或触发了 2FA。
+以 `Authentication completed` 和 `Free games collection completed` 确认完整流程；`Login success` 只代表初步账号认证。`Authentication failed` 还可能来自浏览器兼容性、验证码或商店 SSO 交接，不能一律当成密码错误。
 
 ### 5. 停止 / 重启 / 更新到最新版
 
@@ -207,6 +211,21 @@ docker compose pull && docker compose up -d   # 拉取最新镜像并重新部�
 删除 `./volumes/` 会清空会话，下次需要重新登录。
 
 > 录像、调试截图与 hCaptcha 缓存会随运行累积。容器默认每次运行会清理超过 30 天的旧文件,可用 `RECORD_RETENTION_DAYS`（录像）和 `RUNTIME_RETENTION_DAYS`（调试截图 + 缓存）调整保留天数,设 `0` 表示永久保留。
+
+### 7. 登录故障排查
+
+- 登录同时兼容邮箱、密码同页的新表单和先填邮箱再填密码的分步表单；提交按钮可以是 `#continue` 或 `#sign-in`。
+- 邮箱页移到屏幕外的自动填充密码框不算真正的密码步骤；若邮箱提交就触发验证码，会先解题，再等待真实密码表单。
+- 登录后的账号页若没有旧版确认弹窗，会直接继续验证商店会话，不再一直等待旧版 CSRF 通知。
+- 账号中心登录后还会进入商店自己的 SSO 入口；若出现已保存账号选择页，只选择唯一匹配配置邮箱的账号，不会默认点击其他账号。
+- 只对已经渲染的验证码挑战框解题；普通勾选框或挑战框切换期间不会被当成可操作的图片题，避免重复解题和空 iframe 错误。
+- 若旧版本反复等待 `#sign-in` 超时，而失败截图里已经弹出验证码，应更新登录代码；这不等于大模型接口报错。
+- `Solving login challenge attempt` 表示已进入解题流程；`Login challenge solver failed` 会记录解题异常。模型连接测试通过，不代表实际登录、验证码验证或领取已经成功。
+- 即使 hCaptcha 日志显示成功，Epic 页面仍可能提示 `Incorrect response. Please refresh the page.`。程序会明确报告验证响应被拒绝并结束本轮重试；应先检查正常浏览器能否登录，再排查自动化环境，不能把解题成功当成登录成功。
+
+对于支持相关字段的 Chat Completions 网关，可以设置 `OPENAI_REASONING_EFFORT=low`
+和 `OPENAI_MAX_TOKENS=4096`，控制验证码请求的推理档位和输出上限；默认不发送这两个字段，
+不支持时应保持为空 / `0`。这些设置仅影响本服务，不修改网关的全局路由。
 
 ---
 

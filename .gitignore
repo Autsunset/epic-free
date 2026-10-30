@@ -27,7 +27,14 @@ volumes/
 
 # Env
 .env
-.env.local
+.env.*
+!.env.example
+
+# Private local tooling and deployment backups
+.claude/
+.codex/
+backups/
+*.log
 
 # Local diagnostic dumps (e.g. downloaded Actions artifacts for troubleshooting)
 log/

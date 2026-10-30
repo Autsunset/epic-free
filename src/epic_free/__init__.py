@@ -6,4 +6,4 @@ A refactor of epic-freebies-helper with a unified OpenAI-compatible LLM layer
 src-layout package.
 """
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"

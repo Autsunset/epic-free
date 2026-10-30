@@ -108,6 +108,12 @@ class EpicSettings(AgentConfig):
         default="chat",
         description="OpenAI wire format: chat (Chat Completions, default) | responses (Responses API)",
     )
+    OPENAI_REASONING_EFFORT: str = Field(
+        default="", description="Optional Chat Completions reasoning effort (provider-specific)"
+    )
+    OPENAI_MAX_TOKENS: int = Field(
+        default=0, ge=0, description="Optional Chat Completions output cap; 0 leaves it unset"
+    )
 
     # --- Anthropic (Messages API) ---
     ANTHROPIC_API_KEY: SecretStr | None = Field(default=None, description="Anthropic API key")
@@ -126,6 +132,9 @@ class EpicSettings(AgentConfig):
     # ------------------------------------------------------------------ browser
     BROWSER_BACKEND: str = Field(
         default="auto", description="Supported values: auto, camoufox, playwright"
+    )
+    CAMOUFOX_EXECUTABLE_PATH: str = Field(
+        default="", description="Optional path to a pinned Camoufox browser executable"
     )
     # Default to empty (not a None-returning factory) so a missing credential does
     # not raise a cryptic pydantic error at import; deploy() reports it clearly via
@@ -214,9 +223,11 @@ class EpicSettings(AgentConfig):
             "OPENAI_BASE_URL",
             "OPENAI_MODEL",
             "OPENAI_API_FORMAT",
+            "OPENAI_REASONING_EFFORT",
             "ANTHROPIC_BASE_URL",
             "ANTHROPIC_MODEL",
             "BROWSER_BACKEND",
+            "CAMOUFOX_EXECUTABLE_PATH",
             "EPIC_EMAIL",
             "CHALLENGE_CLASSIFIER_MODEL",
             "IMAGE_CLASSIFIER_MODEL",

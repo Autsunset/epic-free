@@ -23,6 +23,7 @@ from epic_free.models import PromotionGame
 from epic_free.epic.auth import EpicManualActionRequiredError
 from epic_free.epic.promotions import get_promotions
 from epic_free.config import RUNTIME_DIR, settings
+from epic_free.captcha import prepare_challenge_agent
 
 URL_CLAIM = "https://store.epicgames.com/en-US/free-games"
 URL_LOGIN = (
@@ -1338,7 +1339,7 @@ class EpicGames:
     async def _handle_instant_checkout(self, page: Page, promotion: PromotionGame) -> bool:
         url = promotion.url
         logger.info("🚀 Triggering Instant Checkout Flow...")
-        agent = AgentV(page=page, agent_config=settings)
+        agent = prepare_challenge_agent(AgentV(page=page, agent_config=settings))
 
         try:
             state, payload = await self._wait_for_purchase_state(page, url, timeout_ms=25000)
@@ -1623,7 +1624,7 @@ class EpicGames:
         logger.debug("Move ALL paid games from the shopping cart out")
         await self._empty_cart(self.page)
 
-        agent = AgentV(page=self.page, agent_config=settings)
+        agent = prepare_challenge_agent(AgentV(page=self.page, agent_config=settings))
         await self.page.click("//button//span[text()='Check Out']")
         await self._agree_license(self.page)
 

@@ -13,6 +13,7 @@ These cover:
 """
 
 import json
+from types import SimpleNamespace
 
 import pytest
 from hcaptcha_challenger.models import (
@@ -168,6 +169,43 @@ def _text_content(prompt: str):
         parts = [_Part()]
 
     return _Content()
+
+
+def test_chat_limits_are_opt_in():
+    payload = _chat_models()._build_payload(
+        model="test-model", contents=_text_content("hello"), config=SimpleNamespace(), kwargs={}
+    )
+    assert "reasoning_effort" not in payload
+    assert "max_tokens" not in payload
+
+
+def test_chat_limits_follow_explicit_settings():
+    models = _chat_models()
+    models._settings.OPENAI_REASONING_EFFORT = "low"
+    models._settings.OPENAI_MAX_TOKENS = 4096
+
+    payload = models._build_payload(
+        model="test-model", contents=_text_content("hello"), config=SimpleNamespace(), kwargs={}
+    )
+
+    assert payload["reasoning_effort"] == "low"
+    assert payload["max_tokens"] == 4096
+
+
+def test_chat_call_options_can_override_default_limits():
+    models = _chat_models()
+    models._settings.OPENAI_REASONING_EFFORT = "low"
+    models._settings.OPENAI_MAX_TOKENS = 4096
+
+    payload = models._build_payload(
+        model="test-model",
+        contents=_text_content("hello"),
+        config=SimpleNamespace(),
+        kwargs={"reasoning_effort": "high", "max_tokens": 2048},
+    )
+
+    assert payload["reasoning_effort"] == "high"
+    assert payload["max_tokens"] == 2048
 
 
 # ---------------------------------------------------------------------------

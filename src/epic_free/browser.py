@@ -14,10 +14,10 @@ _VIEWPORT = ViewportSize(width=1920, height=1080)
 
 
 def _camoufox_launch_options(headless: bool | str) -> dict:
-    from browserforge.fingerprints import Screen
+    from camoufox.fingerprints import Screen
 
     screen = Screen(max_width=1920, max_height=1080, min_height=1080, min_width=1920)
-    return {
+    options = {
         "persistent_context": True,
         "user_data_dir": settings.user_data_dir_for("camoufox"),
         "screen": screen,
@@ -31,6 +31,9 @@ def _camoufox_launch_options(headless: bool | str) -> dict:
         "humanize": 0.2,
         "headless": headless,
     }
+    if executable := getattr(settings, "CAMOUFOX_EXECUTABLE_PATH", ""):
+        options["executable_path"] = executable
+    return options
 
 
 def _playwright_launch_options(headless: bool | str) -> dict:

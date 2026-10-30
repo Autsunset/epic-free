@@ -8,8 +8,10 @@
 import asyncio
 import json
 import os
+import re
 import time
 from contextlib import suppress
+from urllib.parse import urlsplit
 
 os.environ.setdefault("MPLBACKEND", "Agg")
 
@@ -20,8 +22,10 @@ from playwright.async_api import expect, Page, Response
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from epic_free.config import SCREENSHOTS_DIR, settings
+from epic_free.captcha import prepare_challenge_agent
 
 URL_CLAIM = "https://store.epicgames.com/en-US/free-games"
+URL_STORE_LOGIN = "https://store.epicgames.com/login"
 
 
 class EpicAuthenticationFatalError(RuntimeError):
@@ -75,7 +79,7 @@ class EpicAuthorization:
         Returns:
 
         """
-        await self.page.goto("https://www.epicgames.com/account/personal", wait_until="networkidle")
+        await self.page.goto("https://www.epicgames.com/account/personal", wait_until="domcontentloaded")
 
         btn_ids = ["#link-success", "#login-reminder-prompt-setup-tfa-skip", "#yes"]
 
@@ -90,12 +94,18 @@ class EpicAuthorization:
 
             await self.page.wait_for_timeout(500)
             action_chains = btn_ids.copy()
+            handled_prompt = False
             for action in action_chains:
                 with suppress(Exception):
                     reminder_btn = self.page.locator(action)
                     await expect(reminder_btn).to_be_visible(timeout=1000)
                     await reminder_btn.click(timeout=1000)
                     btn_ids.remove(action)
+                    handled_prompt = True
+
+            if not handled_prompt:
+                logger.debug("No legacy account prompts; proceeding to store session verification")
+                return
 
     def _needs_privacy_policy_correction(self) -> bool:
         return "/id/login/correction/privacy-policy" in self.page.url
@@ -123,6 +133,15 @@ class EpicAuthorization:
         with suppress(Exception):
             return await self.page.locator("body").inner_text(timeout=1000)
         return ""
+
+    async def _check_verification_rejection(self) -> None:
+        body = " ".join((await self._page_body_text()).lower().replace("\u200b", "").split())
+        if "incorrect response. please refresh the page" in body:
+            raise EpicManualActionRequiredError(
+                "Epic rejected the verification response: Incorrect response. Please refresh the page. "
+                "This is not a confirmed login. Check the account in a normal browser before "
+                "retrying automation; this run will not keep retrying the rejected verification."
+            )
 
     async def _dismiss_mfa_setup_prompt(self, timeout_ms: int = 10000) -> bool:
         if not self._needs_mfa_setup_prompt():
@@ -242,8 +261,11 @@ class EpicAuthorization:
 
     async def _has_visible_hcaptcha(self) -> bool:
         for frame in self.page.frames:
-            if "hcaptcha" in (frame.url or "").lower():
+            url = (frame.url or "").lower()
+            if "hcaptcha" in url and "frame=challenge" in url:
                 with suppress(Exception):
+                    if not await frame.locator(".challenge-view").is_visible():
+                        continue
                     frame_element = await frame.frame_element()
                     visible = await frame_element.evaluate(
                         """
@@ -260,16 +282,70 @@ class EpicAuthorization:
                     if visible:
                         return True
 
-        body = (await self._page_body_text()).lower()
-        return any(
-            marker in body
-            for marker in (
-                "one more step",
-                "please complete a security check",
-                "verify you are human",
-                "i am human",
+        return False
+
+    @staticmethod
+    def _account_hint_matches(label: str, email: str) -> bool:
+        expected_local, separator, expected_domain = email.casefold().rpartition("@")
+        if not separator:
+            return False
+        for local, domain in re.findall(r"([^\s@]+)@([^\s@]+)", label.casefold()):
+            if domain.rstrip(".,;:)>]") != expected_domain:
+                continue
+            local = local.lstrip("(<[").replace("...", "*")
+            pattern = ".*".join(
+                re.escape(part) for part in re.split(r"[*\u2022\u2026\u25cf]+", local)
             )
-        )
+            if re.fullmatch(pattern, expected_local):
+                return True
+        return False
+
+    async def _select_saved_account(self) -> bool:
+        cards = await self.page.locator('[role="button"][id^="account-"]').all()
+        if not cards:
+            return False
+        matching = []
+        for card in cards:
+            if await card.is_visible() and self._account_hint_matches(
+                await card.inner_text(timeout=1000), settings.EPIC_EMAIL
+            ):
+                matching.append(card)
+        if len(matching) != 1:
+            raise EpicManualActionRequiredError(
+                "Epic saved-account chooser does not uniquely match the configured email. "
+                "Select the intended account manually; no other account will be chosen."
+            )
+        await matching[0].click(timeout=10000)
+        logger.debug("Selected the configured Epic account for store SSO")
+        return True
+
+    async def _establish_store_session(self, agent: AgentV, timeout_seconds: int = 45) -> None:
+        # Account-portal authentication alone does not create the store's own session.
+        await self.page.goto(URL_STORE_LOGIN, wait_until="domcontentloaded", timeout=45000)
+        deadline = time.monotonic() + timeout_seconds
+        selected_account = False
+        challenges = 0
+        while time.monotonic() < deadline:
+            await self._check_verification_rejection()
+            if self._needs_privacy_policy_correction():
+                raise EpicManualActionRequiredError(
+                    self._privacy_policy_confirmation_message(self.page.url)
+                )
+            if urlsplit(self.page.url).hostname == "store.epicgames.com":
+                if await self._get_login_status(timeout_ms=1000) == "true":
+                    logger.success("Epic store SSO session established")
+                    return
+            if "/id/login/switch-account" in self.page.url and not selected_account:
+                selected_account = await self._select_saved_account()
+            if await self._has_visible_hcaptcha():
+                challenges += 1
+                if challenges > 3:
+                    raise PlaywrightTimeoutError("Store SSO challenge did not complete")
+                started = time.monotonic()
+                await agent.wait_for_challenge()
+                deadline += time.monotonic() - started
+            await self.page.wait_for_timeout(500)
+        raise PlaywrightTimeoutError("Timed out establishing the Epic store SSO session")
 
     async def _wait_for_login_form(self, point_url: str) -> None:
         deadline = time.monotonic() + 45
@@ -359,6 +435,8 @@ class EpicAuthorization:
                 await self._is_login_success_signal.get()
                 return
 
+            await self._check_verification_rejection()
+
             if self._needs_privacy_policy_correction():
                 raise RuntimeError("privacy_policy_confirmation_required")
 
@@ -400,6 +478,7 @@ class EpicAuthorization:
 
     async def _ensure_store_session_ready(self, timeout_seconds: int = 45) -> None:
         deadline = time.monotonic() + timeout_seconds
+        last_status = None
 
         while time.monotonic() < deadline:
             if self._needs_privacy_policy_correction():
@@ -416,27 +495,101 @@ class EpicAuthorization:
                 continue
 
             status = await self._get_login_status(timeout_ms=1500)
+            last_status = status
             if status == "true":
                 return
-            if status == "false":
-                raise RuntimeError(
-                    "Epic store still reports isloggedin=false after authentication. "
-                    f"current_url={self.page.url}"
-                )
 
             await self.page.wait_for_timeout(500)
 
         if self._needs_mfa_setup_prompt():
             raise EpicManualActionRequiredError(self._mfa_setup_prompt_message(self.page.url))
 
+        if last_status == "false":
+            raise RuntimeError(
+                "Epic store still reports isloggedin=false after authentication. "
+                f"current_url={self.page.url}"
+            )
+
         raise RuntimeError(
             "Could not verify Epic store access after authentication. "
             f"current_url={self.page.url}"
         )
 
+    async def _password_form_is_ready(self) -> bool:
+        field = self.page.locator("#password")
+        if not await field.is_visible():
+            return False
+        return await field.evaluate(
+            """
+            (element) => {
+              const rect = element.getBoundingClientRect();
+              if (element.disabled || element.readOnly || rect.width <= 1 || rect.height <= 1 ||
+                  rect.right <= 0 || rect.left >= window.innerWidth) {
+                return false;
+              }
+              // Epic keeps an off-screen autofill field on its email-only step.
+              for (let node = element; node; node = node.parentElement) {
+                const style = getComputedStyle(node);
+                if (node.hidden || node.getAttribute('aria-hidden') === 'true' ||
+                    style.display === 'none' || style.visibility !== 'visible' ||
+                    Number(style.opacity) === 0) {
+                  return false;
+                }
+              }
+              return true;
+            }
+            """,
+            timeout=1000,
+        )
+
+    async def _wait_for_password_form(self, agent: AgentV, submitted: bool) -> None:
+        deadline = time.monotonic() + 45
+        challenges = 0
+        while time.monotonic() < deadline:
+            await self._check_verification_rejection()
+            if await self._password_form_is_ready():
+                return
+            if await self._has_visible_hcaptcha():
+                challenges += 1
+                if challenges > 3:
+                    raise PlaywrightTimeoutError("Email-step challenge did not reveal the password form")
+                logger.debug("Solving email-step challenge attempt {}/3", challenges)
+                started = time.monotonic()
+                await agent.wait_for_challenge()
+                # The solver has its own timeout; do not count it as form-rendering time.
+                deadline += time.monotonic() - started
+            elif not submitted:
+                submitted = await self._submit_login()
+            else:
+                await self.page.wait_for_timeout(200)
+
+        raise PlaywrightTimeoutError("Timed out waiting for the real Epic password form")
+
+    async def _submit_login(self) -> bool:
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if await self._has_visible_hcaptcha():
+                logger.debug("Login challenge already visible; handing control to the solver")
+                return False
+
+            for selector in ("#sign-in", "#continue"):
+                button = self.page.locator(selector)
+                if not await button.is_visible() or not await button.is_enabled():
+                    continue
+                try:
+                    await button.click(timeout=1000)
+                    return True
+                except PlaywrightTimeoutError:
+                    # A challenge can appear between the visibility check and the click.
+                    break
+
+            await self.page.wait_for_timeout(200)
+
+        raise PlaywrightTimeoutError("Timed out waiting for Epic login submit or challenge")
+
     async def _login(self) -> bool | None:
         # 尽可能早地初始化机器人
-        agent = AgentV(page=self.page, agent_config=settings)
+        agent = prepare_challenge_agent(AgentV(page=self.page, agent_config=settings))
 
         # {{< SIGN IN PAGE >}}
         logger.debug("Login with Email")
@@ -454,23 +607,28 @@ class EpicAuthorization:
             email_input = self.page.locator("#email")
             await email_input.fill(settings.EPIC_EMAIL)
 
-            # 2. 点击继续按钮
-            await self.page.click("#continue")
-
-            # 3. 输入密码
             password_input = self.page.locator("#password")
+            # Ignore the autofill placeholder and complete any email-step challenge first.
+            if not await self._password_form_is_ready():
+                email_submitted = await self._submit_login()
+                await self._wait_for_password_form(agent, email_submitted)
             await expect(password_input).to_be_visible(timeout=10000)
             await password_input.fill(settings.EPIC_PASSWORD.get_secret_value())
 
-            # 4. 点击登录按钮，触发人机挑战值守监听器
-            # Active hCaptcha checkbox
-            await self.page.click("#sign-in")
+            submitted = await self._submit_login()
 
             login_confirmed = False
             for challenge_attempt in range(1, 4):
-                logger.debug("Solving login challenge attempt {}/3", challenge_attempt)
-                with suppress(Exception):
-                    await agent.wait_for_challenge()
+                if await self._has_visible_hcaptcha():
+                    logger.debug("Solving login challenge attempt {}/3", challenge_attempt)
+                    try:
+                        await agent.wait_for_challenge()
+                    except Exception as err:
+                        logger.warning("Login challenge solver failed: {!r}", err)
+
+                if not submitted and not await self._has_visible_hcaptcha():
+                    if await self._password_form_is_ready():
+                        submitted = await self._submit_login()
 
                 try:
                     await self._await_login_outcome(point_url, timeout_seconds=25)
@@ -496,6 +654,7 @@ class EpicAuthorization:
 
             await asyncio.wait_for(self._handle_right_account_validation(), timeout=60)
             logger.success("Right account validation success")
+            await self._establish_store_session(agent)
             await self._goto_claim_page()
             await self._ensure_store_session_ready()
             logger.success("Epic store session verification success")

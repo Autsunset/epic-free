@@ -43,18 +43,16 @@ jobs:
           sudo apt-get install -y xvfb libxml2-dev libxslt-dev
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --frozen
 
-      # GITHUB_TOKEN 降低 Camoufox 下载触发 GitHub 403 限流的概率；
-      # 即使这一步失败，运行时也会回退到 Playwright Firefox。
+      # Use the same digest-verified browser as Docker, not the library's older default.
       - name: Install Camoufox
-        continue-on-error: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: uv run camoufox fetch
+        run: |
+          uv run --no-sync python scripts/download_browser.py --target ./volumes/camoufox-browser
+          echo "CAMOUFOX_EXECUTABLE_PATH=$GITHUB_WORKSPACE/volumes/camoufox-browser/camoufox-bin" >> "$GITHUB_ENV"
 
       - name: Install Playwright Firefox fallback
-        run: uv run playwright install firefox
+        run: uv run --no-sync playwright install firefox
 
       - name: Run epic-free (single shot)
         env:
@@ -95,7 +93,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "🚀 启动单次领取任务（gemini / glm / openai 均支持）..."
-          xvfb-run --auto-servernum --server-num=1 --server-args='-screen 0, 1920x1080x24' uv run epic-free
+          xvfb-run --auto-servernum --server-num=1 --server-args='-screen 0, 1920x1080x24' uv run --no-sync epic-free
 
       - name: Write run summary
         if: always()

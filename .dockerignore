@@ -1,26 +1,14 @@
-# Build artifacts
-build/
-dist/
-*.egg-info/
+# Only public build inputs enter the context; exclude credentials, profiles,
+# diagnostics and local tooling even when new private files are added later.
+**
+!Dockerfile
+!pyproject.toml
+!uv.lock
+!README.md
+!src/
+!src/**
+!scripts/
+!scripts/download_browser.py
 
-# Virtual envs
-.venv/
-venv/
-.uv/
-
-# Caches
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.ruff_cache/
-.git/
-
-# Local runtime data
-volumes/
-.env
-.env.local
-
-# Docs / editor (not needed in the image)
-.idea/
-.vscode/
-.DS_Store
+**/__pycache__/
+**/*.py[cod]
