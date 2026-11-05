@@ -9,6 +9,7 @@ import json
 import time
 from contextlib import suppress
 from typing import List
+from urllib.parse import urlsplit
 
 from hcaptcha_challenger.agent import AgentV
 from loguru import logger
@@ -20,7 +21,7 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt
 
 from epic_free.models import Order, OrderItem
 from epic_free.models import PromotionGame
-from epic_free.epic.auth import EpicManualActionRequiredError
+from epic_free.epic.auth import EpicAuthorization, EpicManualActionRequiredError
 from epic_free.epic.promotions import get_promotions
 from epic_free.config import RUNTIME_DIR, settings
 from epic_free.captcha import prepare_challenge_agent
@@ -31,6 +32,8 @@ URL_LOGIN = (
 )
 URL_CART = "https://store.epicgames.com/en-US/cart"
 URL_CART_SUCCESS = "https://store.epicgames.com/en-US/cart/success"
+URL_ORDER_HISTORY = "https://www.epicgames.com/account/v2/payment/ajaxGetOrderHistory"
+ORDER_HISTORY_PATH = "/account/v2/payment/ajaxGetOrderHistory"
 
 
 URL_PRODUCT_PAGE = "https://store.epicgames.com/en-US/p/"
@@ -40,6 +43,45 @@ PURCHASE_IFRAME_SELECTOR = (
 )
 CHECKOUT_BUTTON_TEXTS = ("PLACE ORDER", "ADD TO LIBRARY")
 PurchaseContainer = FrameLocator | Frame | Page
+
+
+async def _fetch_order_history(page: Page) -> dict:
+    """Read the first order-history page, completing the saved-account handoff if needed."""
+    await page.goto(URL_ORDER_HISTORY, wait_until="domcontentloaded", timeout=15000)
+    current = urlsplit(page.url)
+    if current.hostname == "www.epicgames.com" and current.path == "/id/login":
+        await page.wait_for_function(
+            """() => location.pathname === '/id/login/switch-account'
+                || location.pathname === '/account/v2/payment/ajaxGetOrderHistory'""",
+            timeout=10000,
+        )
+        current = urlsplit(page.url)
+    if current.hostname == "www.epicgames.com" and current.path == "/id/login/switch-account":
+        await page.locator('[role="button"][id^="account-"]').first.wait_for(
+            state="visible", timeout=10000
+        )
+        if not await EpicAuthorization(page)._select_saved_account():
+            raise RuntimeError("Epic account selection is unavailable")
+        await page.wait_for_function(
+            """() => location.hostname === 'accounts.epicgames.com'
+                && location.pathname === '/account/v2/payment/ajaxGetOrderHistory'""",
+            timeout=15000,
+        )
+
+    current = urlsplit(page.url)
+    if current.hostname not in {"www.epicgames.com", "accounts.epicgames.com"} or (
+        current.path != ORDER_HISTORY_PATH
+    ):
+        raise RuntimeError(
+            "Epic order history redirected to an unexpected page "
+            f"(host={current.hostname!r}, path={current.path!r})"
+        )
+
+    text_content = await page.locator("pre").first.text_content(timeout=5000)
+    payload = json.loads(text_content or "")
+    if not isinstance(payload, dict) or not isinstance(payload.get("orders"), list):
+        raise ValueError("Epic order history returned an invalid response")
+    return payload
 
 
 class EpicAgent:
@@ -148,9 +190,7 @@ class EpicAgent:
             return
         completed_orders: List[OrderItem] = []
         try:
-            await self.page.goto("https://www.epicgames.com/account/v2/payment/ajaxGetOrderHistory")
-            text_content = await self.page.text_content("//pre")
-            data = json.loads(text_content)
+            data = await _fetch_order_history(self.page)
             for _order in data["orders"]:
                 order = Order(**_order)
                 if order.orderType != "PURCHASE":
@@ -1177,13 +1217,7 @@ class EpicGames:
 
     async def _is_promotion_in_order_history(self, promotion: PromotionGame) -> bool:
         try:
-            await self.page.goto(
-                "https://www.epicgames.com/account/v2/payment/ajaxGetOrderHistory",
-                wait_until="domcontentloaded",
-                timeout=15000,
-            )
-            text_content = await self.page.text_content("//pre")
-            payload = json.loads(text_content or "{}")
+            payload = await _fetch_order_history(self.page)
         except Exception as err:
             logger.warning(
                 f"Failed to verify order history for promotion '{promotion.title}': {err!r}"
